@@ -1,4 +1,4 @@
-import { useEffect, useState, useMemo } from 'react'
+import { useEffect, useState, useMemo, useRef } from 'react'
 import { Link } from 'react-router-dom'
 import { useStore } from '../lib/store'
 import TicketCard from '../components/TicketCard'
@@ -13,6 +13,7 @@ export default function Dashboard() {
   const fetchTickets = useStore((state) => state.fetchTickets)
   const fetchTicketStats = useStore((state) => state.fetchTicketStats)
   const fetchAppConfig = useStore((state) => state.fetchAppConfig)
+  const initialLoadDone = useRef(false)
 
   // Get developer name from config
   const developerName = appConfig?.developer_name || null
@@ -24,11 +25,14 @@ export default function Dashboard() {
 
   // Fetch app config on mount
   useEffect(() => {
+    if (initialLoadDone.current) return
+    initialLoadDone.current = true
     fetchAppConfig()
   }, [fetchAppConfig])
 
   // Fetch tickets and stats when config is loaded
   useEffect(() => {
+    if (!initialLoadDone.current) return
     fetchTickets()
     // Stats are always developer-centric
     if (developerName) {

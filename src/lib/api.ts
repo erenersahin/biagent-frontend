@@ -23,6 +23,7 @@ async function fetchJson<T>(url: string, options?: RequestInit): Promise<T> {
 export interface AppConfig {
   developer_name: string | null
   jira_project_key: string | null
+  max_steps: number  // Number of pipeline steps enabled (1-8)
 }
 
 export async function getAppConfig() {
@@ -109,8 +110,37 @@ export async function getPipelineSteps(pipelineId: string) {
   return fetchJson<{ steps: PipelineStep[] }>(`/pipelines/${pipelineId}/steps`)
 }
 
+export interface StepToolCall {
+  tool: string
+  arguments: string
+  timestamp: string
+}
+
+export interface StepEvent {
+  type: 'text' | 'tool_call'
+  content?: string  // For text events
+  tool?: string     // For tool_call events
+  arguments?: object
+  timestamp?: string  // ISO timestamp
+}
+
+export interface AllStepOutputs {
+  steps: Record<number, {
+    content: string
+    events: StepEvent[]      // Chronological events (new format)
+    tool_calls: StepToolCall[] // Fallback for old data
+  }>
+}
+
+export async function getAllStepOutputs(pipelineId: string) {
+  return fetchJson<AllStepOutputs>(`/pipelines/${pipelineId}/outputs`)
+}
+
 export async function getStepOutput(pipelineId: string, stepNumber: number) {
-  return fetchJson<{ outputs: StepOutput[] }>(
+  return fetchJson<{
+    outputs: StepOutput[]
+    tool_calls: StepToolCall[]
+  }>(
     `/pipelines/${pipelineId}/steps/${stepNumber}/output`
   )
 }

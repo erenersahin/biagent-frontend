@@ -1,29 +1,179 @@
 import { useState } from 'react'
 import type { PipelineStep } from '../types'
+import type { StepEvent } from '../lib/store'
+import type { StepEvent as ApiStepEvent } from '../lib/api'
 import * as api from '../lib/api'
 
-interface ToolCall {
-  tool: string
-  arguments: object
-  timestamp: number
+
+// Render arguments as a simple table
+const ArgsTable = ({ args }: { args: object }) => {
+  const entries = Object.entries(args)
+  if (entries.length === 0) return <span className="text-text-muted text-xs">No arguments</span>
+
+  return (
+    <table className="w-full text-xs border-collapse">
+      <tbody>
+        {entries.map(([key, value]) => (
+          <tr key={key} className="border-b border-gray-100 last:border-0">
+            <td className="py-1 pr-3 text-text-muted font-medium align-top whitespace-nowrap font-mono">{key}</td>
+            <td className="py-1 text-text-body break-all">
+              {typeof value === 'string'
+                ? (value.length > 200 ? value.slice(0, 200) + '...' : value)
+                : JSON.stringify(value)}
+            </td>
+          </tr>
+        ))}
+      </tbody>
+    </table>
+  )
+}
+
+// Compact tool call display
+const ToolCallItem = ({ tool, args, isRunning }: { tool: string; args: object; isRunning?: boolean }) => {
+  const [expanded, setExpanded] = useState(false)
+  const argCount = Object.keys(args).length
+
+  return (
+    <div className="mb-2">
+      <button
+        className={`inline-flex items-center gap-1.5 px-2 py-1 rounded text-xs font-mono transition-colors border ${isRunning
+            ? 'bg-info/20 text-primary-dark border-info hover:bg-info/30'
+            : 'bg-bg-page text-text-body border-transparent hover:border-gray-200'
+          }`}
+        onClick={() => setExpanded(!expanded)}
+      >
+        {isRunning && (
+          <svg className="w-3 h-3 animate-spin" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15" />
+          </svg>
+        )}
+        <span>{tool}</span>
+        <span className="text-text-muted">({argCount})</span>
+        <svg className={`w-3 h-3 text-text-muted transition-transform ${expanded ? 'rotate-180' : ''}`} fill="none" stroke="currentColor" viewBox="0 0 24 24">
+          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 9l-7 7-7-7" />
+        </svg>
+      </button>
+      {expanded && (
+        <div className="mt-1 ml-2 p-2 bg-bg-page rounded max-h-32 overflow-auto">
+          <ArgsTable args={args} />
+        </div>
+      )}
+    </div>
+  )
+}
+
+// Text block display
+const TextBlock = ({ content }: { content: string }) => {
+  const [expanded, setExpanded] = useState(false)
+  const isLong = content.length > 300
+
+  return (
+    <div
+      className={`text-sm mb-3 ${isLong ? 'cursor-pointer' : ''}`}
+      onClick={() => isLong && setExpanded(!expanded)}
+    >
+      <p className={`whitespace-pre-wrap text-text-body leading-relaxed ${!expanded && isLong ? 'line-clamp-3' : ''}`}>
+        {content}
+      </p>
+      {isLong && !expanded && (
+        <span className="text-xs text-text-muted hover:text-primary-dark">show more...</span>
+      )}
+    </div>
+  )
+}
+
+// Render a single event
+const EventItem = ({ event }: { event: ApiStepEvent }) => {
+  if (event.type === 'tool_call') {
+    return <ToolCallItem tool={event.tool || ''} args={event.arguments || {}} />
+  }
+  return <TextBlock content={event.content || ''} />
+}
+
+// Completed events view - shows last text as output, with "show all" for history
+const CompletedEventsView = ({ events }: { events: ApiStepEvent[] }) => {
+  const [showAll, setShowAll] = useState(false)
+
+  // Find the last text event (the output)
+  const lastTextIndex = events.map(e => e.type).lastIndexOf('text')
+  const lastTextEvent = lastTextIndex >= 0 ? events[lastTextIndex] : null
+  const previousEvents = lastTextIndex >= 0 ? events.slice(0, lastTextIndex) : events
+  const hasHistory = previousEvents.length > 0
+
+  if (showAll) {
+    return (
+      <>
+        {hasHistory && (
+          <button
+            onClick={() => setShowAll(false)}
+            className="text-xs text-text-muted hover:text-primary-dark mb-3"
+          >
+            ← Hide history
+          </button>
+        )}
+        {events.map((event, idx) => (
+          <EventItem key={idx} event={event} />
+        ))}
+      </>
+    )
+  }
+
+  return (
+    <>
+      {hasHistory && (
+        <button
+          onClick={() => setShowAll(true)}
+          className="text-xs text-text-muted hover:text-primary-dark mb-3 flex items-center gap-1"
+        >
+          <span>Show {previousEvents.length} previous steps</span>
+          <svg className="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 9l-7 7-7-7" />
+          </svg>
+        </button>
+      )}
+      {lastTextEvent && <EventItem event={lastTextEvent} />}
+      {!lastTextEvent && events.length > 0 && (
+        // If no text event, show the last event whatever it is
+        <EventItem event={events[events.length - 1]} />
+      )}
+    </>
+  )
+}
+
+// Running event component
+const RunningEvent = ({ event, showCursor }: { event: StepEvent; showCursor: boolean }) => {
+  if (event.type === 'tool_call') {
+    return <ToolCallItem tool={event.tool} args={event.arguments} isRunning />
+  }
+
+  return (
+    <div className="text-sm mb-3">
+      <p className="whitespace-pre-wrap text-text-body leading-relaxed">
+        {event.content}
+        {showCursor && <span className="streaming-cursor" />}
+      </p>
+    </div>
+  )
 }
 
 interface StepCardProps {
   step: PipelineStep
   pipelineId: string
   isActive: boolean
-  streamingTokens: string
-  completedOutput?: string
-  toolCalls?: ToolCall[]
+  stepEvents: StepEvent[]  // Chronologically ordered events (text + tool calls) - for running steps
+  completedEvents?: ApiStepEvent[]  // Chronological events loaded from DB for completed steps
+  completedOutput?: string  // Fallback: text content for old data without events
+  completedToolCalls?: { tool: string; arguments: string }[]  // Fallback: tool calls for old data
 }
 
 export default function StepCard({
   step,
   pipelineId,
   isActive,
-  streamingTokens,
+  stepEvents = [],
+  completedEvents = [],
   completedOutput = '',
-  toolCalls = [],
+  completedToolCalls = [],
 }: StepCardProps) {
   const [expanded, setExpanded] = useState(isActive)
   const [feedbackOpen, setFeedbackOpen] = useState(false)
@@ -116,9 +266,8 @@ export default function StepCard({
             </span>
           )}
           <svg
-            className={`w-5 h-5 text-text-muted transition-transform ${
-              expanded ? 'rotate-180' : ''
-            }`}
+            className={`w-5 h-5 text-text-muted transition-transform ${expanded ? 'rotate-180' : ''
+              }`}
             fill="none"
             stroke="currentColor"
             viewBox="0 0 24 24"
@@ -133,74 +282,84 @@ export default function StepCard({
         </div>
       </div>
 
-      {/* Expanded Content */}
+      {/* Expanded Content - Fixed height scrollable */}
       {expanded && (
-        <div className="mt-4 space-y-4">
-          {/* Tool Calls */}
-          {toolCalls.length > 0 && step.status === 'running' && (
-            <div className="mb-3 space-y-2">
-              <span className="text-xs font-medium text-text-muted uppercase tracking-wide">Tool Calls</span>
-              <div className="flex flex-wrap gap-2">
-                {toolCalls.map((tc, idx) => (
-                  <div
+        <div className="mt-4 pt-4 border-t border-gray-100">
+          <div className="max-h-96 overflow-y-auto pr-2">
+            {/* Streaming Events (during running) */}
+            {step.status === 'running' && stepEvents.length > 0 && (
+              <>
+                {stepEvents.map((event, idx) => (
+                  <RunningEvent
                     key={idx}
-                    className="inline-flex items-center gap-2 px-3 py-1.5 bg-blue-50 border border-blue-200 rounded-lg text-sm"
-                  >
-                    <span className="w-2 h-2 bg-blue-500 rounded-full animate-pulse" />
-                    <span className="font-mono text-blue-700">{tc.tool}</span>
-                    {tc.arguments && Object.keys(tc.arguments).length > 0 && (
-                      <span className="text-blue-500 text-xs truncate max-w-[200px]">
-                        {JSON.stringify(tc.arguments).slice(0, 50)}...
-                      </span>
-                    )}
-                  </div>
+                    event={event}
+                    showCursor={idx === stepEvents.length - 1 && event.type === 'text'}
+                  />
                 ))}
-              </div>
-            </div>
-          )}
+              </>
+            )}
 
-          {/* Streaming Output (during running) */}
-          {step.status === 'running' && (
-            <div className="reasoning-block">
-              <p className="whitespace-pre-wrap">
-                {streamingTokens}
+            {/* Show placeholder while running with no events */}
+            {step.status === 'running' && stepEvents.length === 0 && (
+              <p className="text-text-muted text-sm italic">
+                Waiting for agent output...
                 <span className="streaming-cursor" />
               </p>
-            </div>
-          )}
+            )}
 
-          {/* Completed Output (after completion) */}
-          {step.status === 'completed' && completedOutput && (
-            <div className="reasoning-block bg-green-50 border-green-200">
-              <p className="whitespace-pre-wrap text-sm">{completedOutput}</p>
-            </div>
-          )}
+            {/* Show message for pending steps */}
+            {step.status === 'pending' && (
+              <p className="text-text-muted text-sm italic text-center py-4">
+                Step not started yet
+              </p>
+            )}
 
-          {/* Show placeholder if completed but no output */}
-          {step.status === 'completed' && !completedOutput && (
-            <div className="text-sm text-text-muted italic">
-              Step completed successfully. Output not captured during streaming.
-            </div>
-          )}
+            {/* Show message for paused steps */}
+            {step.status === 'paused' && stepEvents.length === 0 && (
+              <p className="text-text-muted text-sm italic text-center py-4">
+                Step paused
+              </p>
+            )}
 
-          {/* Error Message */}
+            {/* Completed Output (after completion) */}
+            {step.status === 'completed' && (completedEvents.length > 0 || completedOutput || completedToolCalls.length > 0) && (
+              <>
+                {completedEvents.length > 0 ? (
+                  // New format: show last output with "show all" for history
+                  <CompletedEventsView events={completedEvents} />
+                ) : (
+                  // Fallback: old format - just show text output
+                  completedOutput && <TextBlock content={completedOutput} />
+                )}
+              </>
+            )}
+
+            {/* Show placeholder if completed but no output */}
+            {step.status === 'completed' && completedEvents.length === 0 && !completedOutput && completedToolCalls.length === 0 && (
+              <p className="text-sm text-text-muted italic">
+                Step completed successfully. Output not captured during streaming.
+              </p>
+            )}
+          </div>
+
+          {/* Error Message - outside scrollable area */}
           {step.error_message && (
-            <div className="bg-red-50 border border-error rounded-lg p-4">
-              <p className="text-error text-sm font-mono">
+            <div className="mt-3 bg-red-50 border border-error rounded-lg p-3">
+              <p className="text-error text-xs font-mono">
                 {step.error_message}
               </p>
             </div>
           )}
 
-          {/* Actions */}
+          {/* Actions - outside scrollable area */}
           {(step.status === 'completed' || step.status === 'failed') && (
-            <div className="flex items-center gap-3">
+            <div className="mt-3 flex items-center gap-3">
               <button
                 onClick={(e) => {
                   e.stopPropagation()
                   setFeedbackOpen(!feedbackOpen)
                 }}
-                className="btn btn-secondary text-sm py-2 px-4"
+                className="btn btn-secondary text-xs py-1.5 px-3"
               >
                 Provide Feedback
               </button>
@@ -209,30 +368,30 @@ export default function StepCard({
 
           {/* Feedback Form */}
           {feedbackOpen && (
-            <div className="border-t border-border-light pt-4 mt-4">
-              <label className="block text-sm font-medium text-text-heading mb-2">
+            <div className="border-t border-border-light pt-3 mt-3">
+              <label className="block text-xs font-medium text-text-heading mb-2">
                 What should the agent do differently?
               </label>
               <textarea
                 value={feedback}
                 onChange={(e) => setFeedback(e.target.value)}
                 placeholder="Describe the changes you want..."
-                className="w-full p-3 border-2 border-border-primary rounded-lg font-sans text-sm resize-none"
-                rows={3}
+                className="w-full p-2 border border-border-primary rounded text-xs resize-none"
+                rows={2}
               />
-              <div className="flex justify-end gap-2 mt-3">
+              <div className="flex justify-end gap-2 mt-2">
                 <button
                   onClick={() => setFeedbackOpen(false)}
-                  className="text-sm text-text-muted hover:text-text-body"
+                  className="text-xs text-text-muted hover:text-text-body"
                 >
                   Cancel
                 </button>
                 <button
                   onClick={handleSubmitFeedback}
                   disabled={!feedback.trim() || submitting}
-                  className="btn btn-primary text-sm py-2 px-4 disabled:opacity-50"
+                  className="btn btn-primary text-xs py-1.5 px-3 disabled:opacity-50"
                 >
-                  {submitting ? 'Submitting...' : 'Submit Feedback'}
+                  {submitting ? 'Submitting...' : 'Submit'}
                 </button>
               </div>
             </div>

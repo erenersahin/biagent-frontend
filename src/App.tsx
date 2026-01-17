@@ -1,5 +1,5 @@
 import { Routes, Route, Navigate } from 'react-router-dom'
-import { useEffect } from 'react'
+import { useEffect, useRef } from 'react'
 import Layout from './components/Layout'
 import Dashboard from './pages/Dashboard'
 import TicketDetail from './pages/TicketDetail'
@@ -9,8 +9,13 @@ import { useStore } from './lib/store'
 function App() {
   const { connect } = useWebSocket()
   const restoreSession = useStore((state) => state.restoreSession)
+  const initialized = useRef(false)
 
   useEffect(() => {
+    // Prevent duplicate calls from StrictMode
+    if (initialized.current) return
+    initialized.current = true
+
     // Connect WebSocket
     connect()
 

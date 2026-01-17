@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useState, useRef } from 'react'
 import { useParams } from 'react-router-dom'
 import { useStore } from '../lib/store'
 import * as api from '../lib/api'
@@ -29,19 +29,29 @@ export default function TicketDetail() {
   const [ticket, setTicket] = useState<Ticket | null>(null)
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
+  const loadingRef = useRef<string | null>(null) // Track which ticket is being loaded
 
+  const appConfig = useStore((state) => state.appConfig)
   const currentPipeline = useStore((state) => state.currentPipeline)
   const currentSteps = useStore((state) => state.currentSteps)
-  const streamingTokens = useStore((state) => state.streamingTokens)
+  const stepEvents = useStore((state) => state.stepEvents)
   const stepOutputs = useStore((state) => state.stepOutputs)
-  const toolCalls = useStore((state) => state.toolCalls)
+  const completedEvents = useStore((state) => state.completedEvents)
+  const completedToolCalls = useStore((state) => state.completedToolCalls)
   const setCurrentPipeline = useStore((state) => state.setCurrentPipeline)
   const setCurrentSteps = useStore((state) => state.setCurrentSteps)
   const clearStepOutputs = useStore((state) => state.clearStepOutputs)
   const fetchPipeline = useStore((state) => state.fetchPipeline)
 
+  // Get max steps from config (default 8 for backwards compatibility)
+  const maxSteps = appConfig?.max_steps ?? 8
+
   useEffect(() => {
     if (!ticketKey) return
+
+    // Prevent duplicate calls from StrictMode
+    if (loadingRef.current === ticketKey) return
+    loadingRef.current = ticketKey
 
     // Clear previous state when changing tickets
     setCurrentPipeline(null)
@@ -65,9 +75,12 @@ export default function TicketDetail() {
           // Fetch pipeline steps
           await fetchPipeline(pipeline.id)
 
-          // For completed/paused/failed pipelines, load step outputs from the database
-          if (pipeline.status === 'completed' || pipeline.status === 'paused' || pipeline.status === 'failed') {
-            await loadStepOutputs(pipeline.id)
+          // Load step outputs from the database (for any pipeline that has started)
+          // This ensures completed steps show their output even while other steps are running
+          // Pass running step number so we can load its tool calls into stepEvents
+          if (pipeline.status !== 'pending') {
+            const runningStep = pipeline.status === 'running' ? pipeline.current_step : undefined
+            await loadStepOutputs(pipeline.id, runningStep)
           }
         } catch {
           // No pipeline exists for this ticket yet - that's fine
@@ -81,30 +94,54 @@ export default function TicketDetail() {
     }
 
     loadTicketAndPipeline()
+
+    return () => {
+      // Reset on unmount so new ticket can load
+      loadingRef.current = null
+    }
   }, [ticketKey, setCurrentPipeline, setCurrentSteps, clearStepOutputs, fetchPipeline])
 
-  // Load step outputs from database for completed/historical pipelines
-  const loadStepOutputs = async (pipelineId: string) => {
+  // Load step outputs and events from database using batch API
+  const loadStepOutputs = async (pipelineId: string, runningStepNum?: number) => {
     const setStepOutputs = useStore.getState().setStepOutputs
-    const outputs: Record<number, string> = {}
+    const setCompletedEvents = useStore.getState().setCompletedEvents
+    const setCompletedToolCalls = useStore.getState().setCompletedToolCalls
+    const appendToolCallEvent = useStore.getState().appendToolCallEvent
 
-    // Fetch outputs for all 8 steps
-    for (let stepNum = 1; stepNum <= 8; stepNum++) {
-      try {
-        const response = await api.getStepOutput(pipelineId, stepNum)
-        if (response.outputs && response.outputs.length > 0) {
-          // Get the most recent output
-          const latestOutput = response.outputs[0]
-          outputs[stepNum] = latestOutput.content || ''
+    try {
+      // Single batch request instead of 8 individual requests
+      const response = await api.getAllStepOutputs(pipelineId)
+      const outputs: Record<number, string> = {}
+
+      for (const [stepNumStr, stepData] of Object.entries(response.steps)) {
+        const stepNum = parseInt(stepNumStr)
+        if (stepData.content) {
+          outputs[stepNum] = stepData.content
         }
-      } catch {
-        // Step may not have output yet
-      }
-    }
 
-    // Update store with loaded outputs
-    if (Object.keys(outputs).length > 0) {
-      setStepOutputs(outputs)
+        // For running step: populate stepEvents from tool_calls (they're saved in real-time)
+        if (stepNum === runningStepNum && stepData.tool_calls && stepData.tool_calls.length > 0) {
+          for (const tc of stepData.tool_calls) {
+            appendToolCallEvent(stepNum, tc.tool, JSON.parse(tc.arguments))
+          }
+        }
+        // For completed steps: prefer events (chronological) over tool_calls (fallback)
+        else if (stepData.events && stepData.events.length > 0) {
+          setCompletedEvents(stepNum, stepData.events)
+        } else if (stepData.tool_calls && stepData.tool_calls.length > 0) {
+          // Fallback for old data without events
+          setCompletedToolCalls(stepNum, stepData.tool_calls.map(tc => ({
+            tool: tc.tool,
+            arguments: tc.arguments
+          })))
+        }
+      }
+
+      if (Object.keys(outputs).length > 0) {
+        setStepOutputs(outputs)
+      }
+    } catch {
+      // Pipeline may not have outputs yet
     }
   }
 
@@ -226,7 +263,7 @@ export default function TicketDetail() {
             <div>
               <p className="section-label mb-1">/ Pipeline</p>
               <p className="text-sm text-text-muted">
-                Step {currentPipeline.current_step} of 8 &bull;{' '}
+                Step {currentPipeline.current_step} of {maxSteps} &bull;{' '}
                 {currentPipeline.total_tokens.toLocaleString()} tokens &bull; $
                 {currentPipeline.total_cost.toFixed(4)}
               </p>
@@ -248,9 +285,10 @@ export default function TicketDetail() {
                 step={step}
                 pipelineId={currentPipeline.id}
                 isActive={step.step_number === currentPipeline.current_step}
-                streamingTokens={streamingTokens[step.step_number] || ''}
+                stepEvents={stepEvents[step.step_number] || []}
+                completedEvents={completedEvents[step.step_number] || []}
                 completedOutput={stepOutputs[step.step_number] || ''}
-                toolCalls={step.step_number === currentPipeline.current_step ? toolCalls : []}
+                completedToolCalls={completedToolCalls[step.step_number] || []}
               />
             ))}
           </div>

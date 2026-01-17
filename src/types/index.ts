@@ -105,7 +105,7 @@ export type WSMessage =
   | { type: 'pipeline_resumed'; pipeline_id: string; step: number }
   | { type: 'pipeline_completed'; pipeline_id: string; total_tokens?: number; total_cost?: number }
   | { type: 'pipeline_failed'; pipeline_id: string; step: number; error: string }
-  | { type: 'tool_call_started'; pipeline_id: string; tool: string; arguments: object }
+  | { type: 'tool_call_started'; pipeline_id: string; step: number; tool: string; arguments: object }
   | { type: 'sync_complete'; count: number; timestamp: string }
   | { type: 'ticket_updated'; id: string; key: string; changes: string[] }
 
