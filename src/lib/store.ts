@@ -1,0 +1,327 @@
+import { create } from 'zustand'
+import type { Ticket, Pipeline, PipelineStep, Tab, TicketStats, WSMessage } from '../types'
+import * as api from './api'
+import type { AppConfig } from './api'
+
+interface StoreState {
+  // App Config
+  appConfig: AppConfig | null
+
+  // Session
+  sessionId: string | null
+  tabs: Tab[]
+  activeTab: string | null
+
+  // Tickets
+  tickets: Ticket[]
+  ticketStats: TicketStats | null
+  lastSynced: string | null
+
+  // Pipeline state (current view)
+  currentPipeline: Pipeline | null
+  currentSteps: PipelineStep[]
+  streamingTokens: Record<number, string>  // step_number -> tokens
+  stepOutputs: Record<number, string>  // step_number -> final output (preserved after completion)
+  toolCalls: { tool: string; arguments: object; timestamp: number }[]  // recent tool calls
+
+  // Loading states
+  loading: {
+    tickets: boolean
+    pipeline: boolean
+    session: boolean
+  }
+
+  // Actions
+  setAppConfig: (config: AppConfig) => void
+  setSessionId: (id: string) => void
+  setTabs: (tabs: Tab[]) => void
+  setActiveTab: (key: string | null) => void
+  addTab: (tab: Tab) => void
+  removeTab: (tabId: string) => void
+
+  setTickets: (tickets: Ticket[]) => void
+  setTicketStats: (stats: TicketStats) => void
+  setLastSynced: (time: string) => void
+
+  setCurrentPipeline: (pipeline: Pipeline | null) => void
+  setCurrentSteps: (steps: PipelineStep[]) => void
+  appendToken: (step: number, token: string) => void
+  clearTokens: (step: number) => void
+  setStepOutputs: (outputs: Record<number, string>) => void
+  clearStepOutputs: () => void
+
+  setLoading: (key: keyof StoreState['loading'], value: boolean) => void
+
+  // API actions
+  fetchAppConfig: () => Promise<void>
+  fetchTickets: () => Promise<void>
+  fetchTicketStats: (assignee?: string) => Promise<void>
+  fetchPipeline: (pipelineId: string) => Promise<void>
+  restoreSession: () => Promise<void>
+
+  // Handle WebSocket messages
+  handleWSMessage: (message: WSMessage) => void
+}
+
+export const useStore = create<StoreState>((set, get) => ({
+  // Initial state
+  appConfig: null,
+
+  sessionId: localStorage.getItem('biagent_session_id'),
+  tabs: [],
+  activeTab: null,
+
+  tickets: [],
+  ticketStats: null,
+  lastSynced: null,
+
+  currentPipeline: null,
+  currentSteps: [],
+  streamingTokens: {},
+  stepOutputs: {},
+  toolCalls: [],
+
+  loading: {
+    tickets: false,
+    pipeline: false,
+    session: false,
+  },
+
+  // Actions
+  setAppConfig: (config) => set({ appConfig: config }),
+
+  setSessionId: (id) => {
+    localStorage.setItem('biagent_session_id', id)
+    set({ sessionId: id })
+  },
+
+  setTabs: (tabs) => set({ tabs }),
+  setActiveTab: (key) => set({ activeTab: key }),
+
+  addTab: (tab) => set((state) => ({
+    tabs: [...state.tabs, tab],
+    activeTab: tab.ticket_key,
+  })),
+
+  removeTab: (tabId) => set((state) => {
+    const newTabs = state.tabs.filter(t => t.id !== tabId)
+    const removedTab = state.tabs.find(t => t.id === tabId)
+    let newActiveTab = state.activeTab
+
+    if (removedTab && state.activeTab === removedTab.ticket_key) {
+      newActiveTab = newTabs.length > 0 ? newTabs[0].ticket_key : null
+    }
+
+    return { tabs: newTabs, activeTab: newActiveTab }
+  }),
+
+  setTickets: (tickets) => set({ tickets }),
+  setTicketStats: (stats) => set({ ticketStats: stats }),
+  setLastSynced: (time) => set({ lastSynced: time }),
+
+  setCurrentPipeline: (pipeline) => set({ currentPipeline: pipeline }),
+  setCurrentSteps: (steps) => set({ currentSteps: steps }),
+
+  appendToken: (step, token) => set((state) => ({
+    streamingTokens: {
+      ...state.streamingTokens,
+      [step]: (state.streamingTokens[step] || '') + token,
+    },
+  })),
+
+  clearTokens: (step) => set((state) => {
+    const newTokens = { ...state.streamingTokens }
+    delete newTokens[step]
+    return { streamingTokens: newTokens }
+  }),
+
+  setStepOutputs: (outputs) => set((state) => ({
+    stepOutputs: { ...state.stepOutputs, ...outputs }
+  })),
+
+  clearStepOutputs: () => set({ stepOutputs: {} }),
+
+  setLoading: (key, value) => set((state) => ({
+    loading: { ...state.loading, [key]: value },
+  })),
+
+  // API actions
+  fetchAppConfig: async () => {
+    try {
+      const config = await api.getAppConfig()
+      set({ appConfig: config })
+    } catch (error) {
+      console.error('Failed to fetch app config:', error)
+    }
+  },
+
+  fetchTickets: async () => {
+    set((state) => ({ loading: { ...state.loading, tickets: true } }))
+    try {
+      const response = await api.listTickets({ limit: 500 })
+      set({
+        tickets: response.tickets,
+        lastSynced: response.last_synced,
+        loading: { ...get().loading, tickets: false },
+      })
+    } catch (error) {
+      console.error('Failed to fetch tickets:', error)
+      set((state) => ({ loading: { ...state.loading, tickets: false } }))
+    }
+  },
+
+  fetchTicketStats: async (assignee?: string) => {
+    try {
+      const stats = await api.getTicketStats(assignee)
+      set({ ticketStats: stats })
+    } catch (error) {
+      console.error('Failed to fetch stats:', error)
+    }
+  },
+
+  fetchPipeline: async (pipelineId) => {
+    set((state) => ({ loading: { ...state.loading, pipeline: true } }))
+    try {
+      const [pipeline, stepsResponse] = await Promise.all([
+        api.getPipeline(pipelineId),
+        api.getPipelineSteps(pipelineId),
+      ])
+      set({
+        currentPipeline: pipeline,
+        currentSteps: stepsResponse.steps,
+        loading: { ...get().loading, pipeline: false },
+      })
+    } catch (error) {
+      console.error('Failed to fetch pipeline:', error)
+      set((state) => ({ loading: { ...state.loading, pipeline: false } }))
+    }
+  },
+
+  restoreSession: async () => {
+    set((state) => ({ loading: { ...state.loading, session: true } }))
+    try {
+      const sessionId = get().sessionId
+      const session = await api.restoreSession(sessionId || undefined)
+
+      set({
+        sessionId: session.session_id,
+        tabs: session.tabs,
+        activeTab: session.active_tab || null,
+        loading: { ...get().loading, session: false },
+      })
+
+      localStorage.setItem('biagent_session_id', session.session_id)
+    } catch (error) {
+      console.error('Failed to restore session:', error)
+      set((state) => ({ loading: { ...state.loading, session: false } }))
+    }
+  },
+
+  // Handle WebSocket messages
+  handleWSMessage: (message) => {
+    const state = get()
+
+    switch (message.type) {
+      case 'token':
+        state.appendToken(message.step, message.token)
+        break
+
+      case 'step_started':
+        set((s) => {
+          // Clear output for this step when it starts (in case of retry)
+          const newOutputs = { ...s.stepOutputs }
+          delete newOutputs[message.step]
+          return {
+            currentSteps: s.currentSteps.map((step) =>
+              step.step_number === message.step
+                ? { ...step, status: 'running' }
+                : step
+            ),
+            toolCalls: [],  // Clear tool calls when new step starts
+            stepOutputs: newOutputs,
+          }
+        })
+        break
+
+      case 'tool_call_started':
+        set((s) => ({
+          toolCalls: [
+            ...s.toolCalls,
+            { tool: message.tool, arguments: message.arguments, timestamp: Date.now() }
+          ].slice(-10),  // Keep last 10 tool calls
+        }))
+        break
+
+      case 'step_completed':
+        // Save streaming tokens to stepOutputs before clearing
+        const currentOutput = state.streamingTokens[message.step] || ''
+        state.clearTokens(message.step)
+        set((s) => ({
+          currentSteps: s.currentSteps.map((step) =>
+            step.step_number === message.step
+              ? { ...step, status: 'completed', tokens_used: message.tokens_used || 0, cost: message.cost || 0 }
+              : step
+          ),
+          currentPipeline: s.currentPipeline
+            ? {
+                ...s.currentPipeline,
+                current_step: message.next_step || 8,
+                total_tokens: (s.currentPipeline.total_tokens || 0) + (message.tokens_used || 0),
+                total_cost: (s.currentPipeline.total_cost || 0) + (message.cost || 0),
+              }
+            : null,
+          stepOutputs: {
+            ...s.stepOutputs,
+            [message.step]: currentOutput || message.output || '',
+          },
+        }))
+        break
+
+      case 'pipeline_completed':
+        set((s) => ({
+          currentPipeline: s.currentPipeline
+            ? { ...s.currentPipeline, status: 'completed' }
+            : null,
+        }))
+        break
+
+      case 'pipeline_paused':
+        set((s) => ({
+          currentPipeline: s.currentPipeline
+            ? { ...s.currentPipeline, status: 'paused' }
+            : null,
+          currentSteps: s.currentSteps.map((step) =>
+            step.step_number === message.step
+              ? { ...step, status: 'paused' }
+              : step
+          ),
+        }))
+        break
+
+      case 'pipeline_failed':
+        set((s) => ({
+          currentPipeline: s.currentPipeline
+            ? { ...s.currentPipeline, status: 'failed' }
+            : null,
+          currentSteps: s.currentSteps.map((step) =>
+            step.step_number === message.step
+              ? { ...step, status: 'failed', error_message: message.error }
+              : step
+          ),
+        }))
+        break
+
+      case 'sync_complete':
+        state.fetchTickets()
+        state.fetchTicketStats()
+        break
+
+      case 'ticket_updated':
+        state.fetchTickets()
+        break
+
+      default:
+        break
+    }
+  },
+}))
