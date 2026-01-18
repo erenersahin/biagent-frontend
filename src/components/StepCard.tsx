@@ -1,4 +1,6 @@
 import { useState } from 'react'
+import ReactMarkdown from 'react-markdown'
+import remarkGfm from 'remark-gfm'
 import type { PipelineStep } from '../types'
 import type { StepEvent } from '../lib/store'
 import type { StepEvent as ApiStepEvent } from '../lib/api'
@@ -37,8 +39,8 @@ const ToolCallItem = ({ tool, args, isRunning }: { tool: string; args: object; i
     <div className="mb-2">
       <button
         className={`inline-flex items-center gap-1.5 px-2 py-1 rounded text-xs font-mono transition-colors border ${isRunning
-            ? 'bg-info/20 text-primary-dark border-info hover:bg-info/30'
-            : 'bg-bg-page text-text-body border-transparent hover:border-gray-200'
+          ? 'bg-info/20 text-primary-dark border-info hover:bg-info/30'
+          : 'bg-bg-page text-text-body border-transparent hover:border-gray-200'
           }`}
         onClick={() => setExpanded(!expanded)}
       >
@@ -62,21 +64,57 @@ const ToolCallItem = ({ tool, args, isRunning }: { tool: string; args: object; i
   )
 }
 
-// Text block display
+// Markdown text block with design system styling
 const TextBlock = ({ content }: { content: string }) => {
   const [expanded, setExpanded] = useState(false)
-  const isLong = content.length > 300
+  const isLong = content.length > 500
 
   return (
-    <div
-      className={`text-sm mb-3 ${isLong ? 'cursor-pointer' : ''}`}
-      onClick={() => isLong && setExpanded(!expanded)}
-    >
-      <p className={`whitespace-pre-wrap text-text-body leading-relaxed ${!expanded && isLong ? 'line-clamp-3' : ''}`}>
-        {content}
-      </p>
-      {isLong && !expanded && (
-        <span className="text-xs text-text-muted hover:text-primary-dark">show more...</span>
+    <div className="mb-3">
+      <div className={`prose prose-sm max-w-none ${!expanded && isLong ? 'line-clamp-6' : ''}`}>
+        <ReactMarkdown
+          remarkPlugins={[remarkGfm]}
+          components={{
+            h1: ({ children }) => <h1 className="text-lg font-semibold text-text-heading mt-4 mb-2">{children}</h1>,
+            h2: ({ children }) => <h2 className="text-base font-semibold text-text-heading mt-3 mb-2">{children}</h2>,
+            h3: ({ children }) => <h3 className="text-sm font-semibold text-text-heading mt-2 mb-1">{children}</h3>,
+            p: ({ children }) => <p className="text-sm text-text-body mb-2 leading-relaxed">{children}</p>,
+            ul: ({ children }) => <ul className="text-sm text-text-body mb-2 ml-4 list-disc">{children}</ul>,
+            ol: ({ children }) => <ol className="text-sm text-text-body mb-2 ml-4 list-decimal">{children}</ol>,
+            li: ({ children }) => <li className="mb-1">{children}</li>,
+            code: ({ children, className }) => {
+              const isBlock = className?.includes('language-')
+              return isBlock ? (
+                <pre className="bg-bg-page rounded p-2 overflow-x-auto my-2">
+                  <code className="text-xs font-mono text-text-body">{children}</code>
+                </pre>
+              ) : (
+                <code className="bg-bg-page px-1 py-0.5 rounded text-xs font-mono text-text-body">{children}</code>
+              )
+            },
+            pre: ({ children }) => <>{children}</>,
+            strong: ({ children }) => <strong className="font-semibold text-text-heading">{children}</strong>,
+            a: ({ children, href }) => <a href={href} className="text-primary-dark underline hover:no-underline">{children}</a>,
+            blockquote: ({ children }) => <blockquote className="border-l-2 border-primary pl-3 my-2 italic text-text-muted">{children}</blockquote>,
+            hr: () => <hr className="my-3 border-gray-200" />,
+            table: ({ children }) => <table className="text-xs w-full border-collapse my-2 border border-gray-200">{children}</table>,
+            thead: ({ children }) => <thead className="bg-bg-page">{children}</thead>,
+            tbody: ({ children }) => <tbody>{children}</tbody>,
+            tr: ({ children }) => <tr className="border-b border-gray-200">{children}</tr>,
+            th: ({ children }) => <th className="border border-gray-200 bg-bg-page px-2 py-1 text-left font-medium text-text-heading">{children}</th>,
+            td: ({ children }) => <td className="border border-gray-200 px-2 py-1 text-text-body">{children}</td>,
+          }}
+        >
+          {content}
+        </ReactMarkdown>
+      </div>
+      {isLong && (
+        <button
+          onClick={() => setExpanded(!expanded)}
+          className="text-xs text-text-muted hover:text-primary-dark mt-1"
+        >
+          {expanded ? '← show less' : 'show more...'}
+        </button>
       )}
     </div>
   )
