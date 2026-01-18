@@ -2,13 +2,63 @@ import type { Ticket, Pipeline, PipelineStep, Session, TicketStats, StepOutput, 
 
 const API_BASE = '/api'
 
+// Auth token getter function - set by useAuth hook
+let getAuthToken: (() => Promise<string | null>) | null = null
+let currentOrgId: string | null = null
+
+/**
+ * Set the auth token getter function.
+ * Called by the auth store when Clerk is initialized.
+ */
+export function setAuthTokenGetter(getter: () => Promise<string | null>) {
+  getAuthToken = getter
+}
+
+/**
+ * Set the current organization ID for multi-tenant requests.
+ */
+export function setCurrentOrgId(orgId: string | null) {
+  currentOrgId = orgId
+}
+
+/**
+ * Build headers with auth token and org context.
+ */
+async function buildHeaders(additionalHeaders?: HeadersInit): Promise<HeadersInit> {
+  const headers: Record<string, string> = {
+    'Content-Type': 'application/json',
+  }
+
+  // Add auth token if available
+  if (getAuthToken) {
+    const token = await getAuthToken()
+    if (token) {
+      headers['Authorization'] = `Bearer ${token}`
+    }
+  }
+
+  // Add org context if available
+  if (currentOrgId) {
+    headers['x-clerk-org-id'] = currentOrgId
+  }
+
+  // Merge with additional headers
+  if (additionalHeaders) {
+    const additional = additionalHeaders instanceof Headers
+      ? Object.fromEntries(additionalHeaders.entries())
+      : additionalHeaders as Record<string, string>
+    Object.assign(headers, additional)
+  }
+
+  return headers
+}
+
 async function fetchJson<T>(url: string, options?: RequestInit): Promise<T> {
+  const headers = await buildHeaders(options?.headers)
+
   const response = await fetch(`${API_BASE}${url}`, {
     ...options,
-    headers: {
-      'Content-Type': 'application/json',
-      ...options?.headers,
-    },
+    headers,
   })
 
   if (!response.ok) {
@@ -214,4 +264,47 @@ export async function acknowledgeEvents(sessionId: string, eventIds: string[]) {
       body: JSON.stringify(eventIds),
     }
   )
+}
+
+// Auth API
+export interface AuthStatus {
+  authenticated: boolean
+  user: {
+    id: string
+    clerk_user_id: string
+    email: string
+    name: string | null
+    organizations: Array<{
+      id: string
+      clerk_org_id: string
+      name: string
+      slug: string
+      role: string
+    }>
+    current_org: {
+      id: string
+      clerk_org_id: string
+      name: string
+      slug: string
+      role: string
+    } | null
+  } | null
+  auth_enabled: boolean
+  tier: 'consumer' | 'starter' | 'growth' | 'enterprise'
+}
+
+export async function getAuthStatus() {
+  return fetchJson<AuthStatus>('/auth/status')
+}
+
+export async function getHealth() {
+  return fetchJson<{
+    status: string
+    database: string
+    tier: string
+    auth_enabled: boolean
+    jira_configured: boolean
+    github_configured: boolean
+    anthropic_configured: boolean
+  }>('/health')
 }
