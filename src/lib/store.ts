@@ -249,9 +249,24 @@ export const useStore = create<StoreState>((set, get) => ({
         api.getPipeline(pipelineId),
         api.getPipelineSteps(pipelineId),
       ])
+
+      // Restore user input request state if pipeline is waiting for input
+      let userInputRequest: UserInputRequest | null = null
+      let worktreeStatus: string | null = null
+
+      if (pipeline.status === 'needs_user_input' && pipeline.user_input_request) {
+        worktreeStatus = pipeline.worktree_status || 'needs_user_input'
+        userInputRequest = {
+          input_type: 'setup_commands',
+          repos: pipeline.user_input_request.repos,
+        }
+      }
+
       set({
         currentPipeline: pipeline,
         currentSteps: stepsResponse.steps,
+        userInputRequest,
+        worktreeStatus,
         loading: { ...get().loading, pipeline: false },
       })
     } catch (error) {
@@ -287,11 +302,13 @@ export const useStore = create<StoreState>((set, get) => ({
     switch (message.type) {
       case 'pipeline_started':
       case 'pipeline_resumed':
-        // Update pipeline status to running
+        // Update pipeline status to running and clear worktree state
         set((s) => ({
           currentPipeline: s.currentPipeline
             ? { ...s.currentPipeline, status: 'running' }
             : null,
+          worktreeStatus: null,
+          userInputRequest: null,
         }))
         break
 
@@ -307,11 +324,16 @@ export const useStore = create<StoreState>((set, get) => ({
           const newOutputs = { ...s.stepOutputs }
           delete newOutputs[message.step]
           return {
-            currentSteps: s.currentSteps.map((step) =>
-              step.step_number === message.step
-                ? { ...step, status: 'running' }
-                : step
-            ),
+            currentSteps: s.currentSteps.map((step) => {
+              if (step.step_number === message.step) {
+                // Current step: set to running
+                return { ...step, status: 'running', error_message: undefined }
+              } else if (step.step_number < message.step && step.status === 'running') {
+                // Previous steps that were running: mark as completed
+                return { ...step, status: 'completed' }
+              }
+              return step
+            }),
             stepOutputs: newOutputs,
           }
         })

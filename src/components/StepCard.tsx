@@ -1,6 +1,8 @@
-import { useState } from 'react'
+import { useState, useRef, useEffect } from 'react'
 import ReactMarkdown from 'react-markdown'
 import remarkGfm from 'remark-gfm'
+import { Prism as SyntaxHighlighter } from 'react-syntax-highlighter'
+import { oneLight } from 'react-syntax-highlighter/dist/esm/styles/prism'
 import type { PipelineStep } from '../types'
 import type { StepEvent } from '../lib/store'
 import type { StepEvent as ApiStepEvent } from '../lib/api'
@@ -83,13 +85,29 @@ const TextBlock = ({ content }: { content: string }) => {
             ol: ({ children }) => <ol className="text-sm text-text-body mb-2 ml-4 list-decimal">{children}</ol>,
             li: ({ children }) => <li className="mb-1">{children}</li>,
             code: ({ children, className }) => {
-              const isBlock = className?.includes('language-')
-              return isBlock ? (
-                <pre className="bg-bg-page rounded p-2 overflow-x-auto my-2">
-                  <code className="text-xs font-mono text-text-body">{children}</code>
-                </pre>
-              ) : (
-                <code className="bg-bg-page px-1 py-0.5 rounded text-xs font-mono text-text-body">{children}</code>
+              const match = /language-(\w+)/.exec(className || '')
+              const language = match ? match[1] : ''
+              const isBlock = !!match || (typeof children === 'string' && children.includes('\n'))
+
+              if (isBlock) {
+                return (
+                  <SyntaxHighlighter
+                    style={oneLight}
+                    language={language || 'text'}
+                    PreTag="div"
+                    customStyle={{
+                      margin: '0.5rem 0',
+                      padding: '0.75rem',
+                      borderRadius: '0.375rem',
+                      fontSize: '0.75rem',
+                    }}
+                  >
+                    {String(children).replace(/\n$/, '')}
+                  </SyntaxHighlighter>
+                )
+              }
+              return (
+                <code className="bg-gray-200 text-gray-800 px-1.5 py-0.5 rounded text-xs font-mono">{children}</code>
               )
             },
             pre: ({ children }) => <>{children}</>,
@@ -178,20 +196,67 @@ const CompletedEventsView = ({ events }: { events: ApiStepEvent[] }) => {
   )
 }
 
+// Streaming text with markdown rendering
+const StreamingTextBlock = ({ content, showCursor }: { content: string; showCursor: boolean }) => {
+  return (
+    <div className="mb-3">
+      <div className="prose prose-sm max-w-none">
+        <ReactMarkdown
+          remarkPlugins={[remarkGfm]}
+          components={{
+            h1: ({ children }) => <h1 className="text-lg font-semibold text-text-heading mt-4 mb-2">{children}</h1>,
+            h2: ({ children }) => <h2 className="text-base font-semibold text-text-heading mt-3 mb-2">{children}</h2>,
+            h3: ({ children }) => <h3 className="text-sm font-semibold text-text-heading mt-2 mb-1">{children}</h3>,
+            p: ({ children }) => <p className="text-sm text-text-body mb-2 leading-relaxed">{children}{showCursor && <span className="streaming-cursor" />}</p>,
+            ul: ({ children }) => <ul className="text-sm text-text-body mb-2 ml-4 list-disc">{children}</ul>,
+            ol: ({ children }) => <ol className="text-sm text-text-body mb-2 ml-4 list-decimal">{children}</ol>,
+            li: ({ children }) => <li className="mb-1">{children}</li>,
+            code: ({ children, className }) => {
+              const match = /language-(\w+)/.exec(className || '')
+              const language = match ? match[1] : ''
+              const isBlock = !!match || (typeof children === 'string' && children.includes('\n'))
+
+              if (isBlock) {
+                return (
+                  <SyntaxHighlighter
+                    style={oneLight}
+                    language={language || 'text'}
+                    PreTag="div"
+                    customStyle={{
+                      margin: '0.5rem 0',
+                      padding: '0.75rem',
+                      borderRadius: '0.375rem',
+                      fontSize: '0.75rem',
+                    }}
+                  >
+                    {String(children).replace(/\n$/, '')}
+                  </SyntaxHighlighter>
+                )
+              }
+              return (
+                <code className="bg-gray-200 text-gray-800 px-1.5 py-0.5 rounded text-xs font-mono">{children}</code>
+              )
+            },
+            pre: ({ children }) => <>{children}</>,
+            strong: ({ children }) => <strong className="font-semibold text-text-heading">{children}</strong>,
+            a: ({ children, href }) => <a href={href} className="text-primary-dark underline hover:no-underline">{children}</a>,
+            blockquote: ({ children }) => <blockquote className="border-l-2 border-primary pl-3 my-2 italic text-text-muted">{children}</blockquote>,
+          }}
+        >
+          {content}
+        </ReactMarkdown>
+      </div>
+    </div>
+  )
+}
+
 // Running event component
 const RunningEvent = ({ event, showCursor }: { event: StepEvent; showCursor: boolean }) => {
   if (event.type === 'tool_call') {
     return <ToolCallItem tool={event.tool} args={event.arguments} isRunning />
   }
 
-  return (
-    <div className="text-sm mb-3">
-      <p className="whitespace-pre-wrap text-text-body leading-relaxed">
-        {event.content}
-        {showCursor && <span className="streaming-cursor" />}
-      </p>
-    </div>
-  )
+  return <StreamingTextBlock content={event.content} showCursor={showCursor} />
 }
 
 interface StepCardProps {
@@ -217,6 +282,14 @@ export default function StepCard({
   const [feedbackOpen, setFeedbackOpen] = useState(false)
   const [feedback, setFeedback] = useState('')
   const [submitting, setSubmitting] = useState(false)
+  const scrollContainerRef = useRef<HTMLDivElement>(null)
+
+  // Auto-scroll to bottom when new events arrive during running state
+  useEffect(() => {
+    if (step.status === 'running' && expanded && scrollContainerRef.current) {
+      scrollContainerRef.current.scrollTop = scrollContainerRef.current.scrollHeight
+    }
+  }, [stepEvents, step.status, expanded])
 
   const getStatusClass = () => {
     switch (step.status) {
@@ -323,7 +396,7 @@ export default function StepCard({
       {/* Expanded Content - Fixed height scrollable */}
       {expanded && (
         <div className="mt-4 pt-4 border-t border-gray-100">
-          <div className="max-h-96 overflow-y-auto pr-2">
+          <div ref={scrollContainerRef} className="max-h-96 overflow-y-auto pr-2">
             {/* Streaming Events (during running) */}
             {step.status === 'running' && stepEvents.length > 0 && (
               <>

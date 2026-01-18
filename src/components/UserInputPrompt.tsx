@@ -13,9 +13,24 @@ export default function UserInputPrompt({ pipelineId }: Props) {
   const [commands, setCommands] = useState<Record<string, string>>({})
   const [submitting, setSubmitting] = useState(false)
   const [error, setError] = useState<string | null>(null)
+  const [excludedRepos, setExcludedRepos] = useState<Set<string>>(new Set())
 
   if (!userInputRequest || userInputRequest.input_type !== 'setup_commands') {
     return null
+  }
+
+  const activeRepos = userInputRequest.repos.filter(r => !excludedRepos.has(r.name))
+
+  const toggleRepoExclusion = (repoName: string) => {
+    setExcludedRepos(prev => {
+      const newSet = new Set(prev)
+      if (newSet.has(repoName)) {
+        newSet.delete(repoName)
+      } else {
+        newSet.add(repoName)
+      }
+      return newSet
+    })
   }
 
   const handleCommandChange = (repoName: string, value: string) => {
@@ -23,13 +38,18 @@ export default function UserInputPrompt({ pipelineId }: Props) {
   }
 
   const handleSubmit = async () => {
+    if (activeRepos.length === 0) {
+      setError('At least one repository must be selected')
+      return
+    }
+
     setSubmitting(true)
     setError(null)
 
     try {
-      // Convert multiline commands to array
+      // Convert multiline commands to array - only for active repos
       const data: Record<string, string[]> = {}
-      for (const repo of userInputRequest.repos) {
+      for (const repo of activeRepos) {
         const repoCommands = commands[repo.name] || ''
         data[repo.name] = repoCommands
           .split('\n')
@@ -73,19 +93,61 @@ export default function UserInputPrompt({ pipelineId }: Props) {
         </div>
       </div>
 
+      {/* Show excluded repos that can be added back */}
+      {excludedRepos.size > 0 && (
+        <div className="mb-4 p-3 bg-gray-100 rounded-lg">
+          <p className="text-xs text-text-muted mb-2">Excluded repositories (click to add back):</p>
+          <div className="flex flex-wrap gap-2">
+            {userInputRequest.repos.filter(r => excludedRepos.has(r.name)).map(repo => (
+              <button
+                key={repo.name}
+                type="button"
+                onClick={() => toggleRepoExclusion(repo.name)}
+                className="text-xs px-2 py-1 bg-gray-200 hover:bg-gray-300 rounded font-mono flex items-center gap-1"
+              >
+                <span>+ {repo.name}</span>
+              </button>
+            ))}
+          </div>
+        </div>
+      )}
+
       <div className="space-y-6">
-        {userInputRequest.repos.map((repo) => (
+        {activeRepos.map((repo, index) => (
           <div key={repo.name} className="space-y-2">
             <div className="flex items-center justify-between">
-              <label className="font-mono text-sm font-semibold">{repo.name}</label>
-              {repo.detected_package_manager && (
-                <span className="text-xs px-2 py-1 bg-surface rounded">
-                  Detected: {repo.detected_package_manager}
-                </span>
+              <div className="flex items-center gap-2">
+                {index === 0 && (
+                  <span className="text-xs px-1.5 py-0.5 bg-primary text-primary-dark rounded font-medium">
+                    PRIMARY
+                  </span>
+                )}
+                <label className="font-mono text-sm font-semibold">{repo.name}</label>
+                {repo.detected_package_manager && (
+                  <span className="text-xs px-2 py-0.5 bg-surface rounded">
+                    {repo.detected_package_manager}
+                  </span>
+                )}
+              </div>
+              {activeRepos.length > 1 && (
+                <button
+                  type="button"
+                  onClick={() => toggleRepoExclusion(repo.name)}
+                  className="text-xs text-error hover:underline"
+                >
+                  Remove
+                </button>
               )}
             </div>
 
-            {repo.files_checked && repo.files_checked.length > 0 && (
+            {/* Show reason why this repo was selected */}
+            {repo.reasoning && (
+              <p className="text-xs text-text-muted italic">
+                Why selected: {repo.reasoning}
+              </p>
+            )}
+
+            {repo.files_checked && repo.files_checked?.length > 0 && (
               <p className="text-xs text-text-muted">
                 Files checked: {repo.files_checked.join(', ')}
               </p>

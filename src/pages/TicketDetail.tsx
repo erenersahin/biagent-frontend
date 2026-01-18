@@ -44,7 +44,8 @@ export default function TicketDetail() {
   const setCurrentPipeline = useStore((state) => state.setCurrentPipeline)
   const setCurrentSteps = useStore((state) => state.setCurrentSteps)
   const clearStepOutputs = useStore((state) => state.clearStepOutputs)
-  const fetchPipeline = useStore((state) => state.fetchPipeline)
+  const clearUserInputRequest = useStore((state) => state.clearUserInputRequest)
+  const setWorktreeStatus = useStore((state) => state.setWorktreeStatus)
 
   // Get max steps from config (default 8 for backwards compatibility)
   const maxSteps = appConfig?.max_steps ?? 8
@@ -52,7 +53,7 @@ export default function TicketDetail() {
   useEffect(() => {
     if (!ticketKey) return
 
-    // Prevent duplicate calls from StrictMode
+    // Prevent duplicate calls from StrictMode - don't reset in cleanup
     if (loadingRef.current === ticketKey) return
     loadingRef.current = ticketKey
 
@@ -60,6 +61,8 @@ export default function TicketDetail() {
     setCurrentPipeline(null)
     setCurrentSteps([])
     clearStepOutputs()
+    clearUserInputRequest()
+    setWorktreeStatus(null)
 
     const loadTicketAndPipeline = async () => {
       setLoading(true)
@@ -73,10 +76,21 @@ export default function TicketDetail() {
         // Try to load existing pipeline for this ticket
         try {
           const pipeline = await api.getPipelineByTicket(ticketKey)
-          setCurrentPipeline(pipeline)
 
-          // Fetch pipeline steps
-          await fetchPipeline(pipeline.id)
+          // Fetch steps separately (pipeline already fetched above)
+          const stepsResponse = await api.getPipelineSteps(pipeline.id)
+
+          // Restore user input request state if pipeline is waiting for input
+          if (pipeline.status === 'needs_user_input' && pipeline.user_input_request) {
+            useStore.getState().setWorktreeStatus(pipeline.worktree_status || 'needs_user_input')
+            useStore.getState().setUserInputRequest({
+              input_type: 'setup_commands',
+              repos: pipeline.user_input_request.repos,
+            })
+          }
+
+          setCurrentPipeline(pipeline)
+          setCurrentSteps(stepsResponse.steps)
 
           // Load step outputs from the database (for any pipeline that has started)
           // This ensures completed steps show their output even while other steps are running
@@ -98,11 +112,8 @@ export default function TicketDetail() {
 
     loadTicketAndPipeline()
 
-    return () => {
-      // Reset on unmount so new ticket can load
-      loadingRef.current = null
-    }
-  }, [ticketKey, setCurrentPipeline, setCurrentSteps, clearStepOutputs, fetchPipeline])
+    // Don't reset loadingRef on cleanup - this breaks StrictMode protection
+  }, [ticketKey, setCurrentPipeline, setCurrentSteps, clearStepOutputs, clearUserInputRequest, setWorktreeStatus])
 
   // Load step outputs and events from database using batch API
   const loadStepOutputs = async (pipelineId: string, runningStepNum?: number) => {
@@ -154,7 +165,9 @@ export default function TicketDetail() {
     try {
       const pipeline = await api.createPipeline(ticketKey)
       setCurrentPipeline(pipeline)
-      fetchPipeline(pipeline.id)
+      // Fetch steps for the new pipeline
+      const stepsResponse = await api.getPipelineSteps(pipeline.id)
+      setCurrentSteps(stepsResponse.steps)
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Failed to create pipeline')
     }

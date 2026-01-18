@@ -47,6 +47,17 @@ export interface Pipeline {
   completed_at?: string
   total_tokens: number
   total_cost: number
+  // Worktree session data (included when status is needs_user_input)
+  worktree_status?: string
+  user_input_request?: {
+    repos: Array<{
+      name: string
+      files_checked?: string[]
+      reasoning?: string
+      detected_package_manager?: string
+      suggested_commands?: string[]
+    }>
+  }
 }
 
 export interface PipelineStep {
@@ -156,7 +167,8 @@ export interface UserInputRequest {
   input_type: 'setup_commands'
   repos: {
     name: string
-    files_checked: string[]
+    files_checked?: string[]
+    reasoning?: string
     detected_package_manager?: string
     suggested_commands?: string[]
   }[]
