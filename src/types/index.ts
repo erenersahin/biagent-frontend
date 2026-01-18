@@ -25,6 +25,7 @@ export type PipelineStatus =
   | 'failed'
   | 'waiting_for_review'
   | 'suspended'
+  | 'needs_user_input'
 
 export type StepStatus =
   | 'pending'
@@ -108,6 +109,13 @@ export type WSMessage =
   | { type: 'tool_call_started'; pipeline_id: string; step: number; tool: string; arguments: object }
   | { type: 'sync_complete'; count: number; timestamp: string }
   | { type: 'ticket_updated'; id: string; key: string; changes: string[] }
+  // Worktree events
+  | { type: 'worktree_session_creating'; pipeline_id: string; ticket_key: string; repos: string[] }
+  | { type: 'worktree_setup_started'; pipeline_id: string; repo_name: string }
+  | { type: 'worktree_session_ready'; pipeline_id: string; repos: { name: string; path: string }[] }
+  | { type: 'pipeline_needs_input'; pipeline_id: string; input_type: string; repos: { name: string; files_checked: string[] }[] }
+  | { type: 'worktree_pr_merged'; pipeline_id: string; repo_name: string; branch_name: string; pr_url: string }
+  | { type: 'worktree_session_cleaned'; pipeline_id: string; session_id: string; reason: string }
 
 // Stats types
 export interface TicketStats {
@@ -116,4 +124,40 @@ export interface TicketStats {
   in_progress: number
   pending: number
   failed: number
+}
+
+// Worktree types
+export interface WorktreeRepo {
+  id: string
+  repo_name: string
+  repo_path: string
+  worktree_path: string
+  branch_name: string
+  status: 'pending' | 'creating' | 'setup' | 'ready' | 'failed'
+  setup_commands?: string[]
+  pr_url?: string
+  pr_merged: boolean
+}
+
+export interface WorktreeSession {
+  id: string
+  pipeline_id: string
+  ticket_key: string
+  status: 'pending' | 'creating' | 'ready' | 'needs_user_input' | 'failed' | 'cleaned'
+  base_path: string
+  repos: WorktreeRepo[]
+  created_at?: string
+  ready_at?: string
+  error_message?: string
+  user_input_request?: UserInputRequest
+}
+
+export interface UserInputRequest {
+  input_type: 'setup_commands'
+  repos: {
+    name: string
+    files_checked: string[]
+    detected_package_manager?: string
+    suggested_commands?: string[]
+  }[]
 }

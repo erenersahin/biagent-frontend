@@ -1,5 +1,5 @@
 import { create } from 'zustand'
-import type { Ticket, Pipeline, PipelineStep, Tab, TicketStats, WSMessage } from '../types'
+import type { Ticket, Pipeline, PipelineStep, Tab, TicketStats, WSMessage, UserInputRequest } from '../types'
 import * as api from './api'
 import type { AppConfig, StepEvent as ApiStepEvent } from './api'
 
@@ -29,6 +29,10 @@ interface StoreState {
   stepOutputs: Record<number, string>  // step_number -> final output (preserved after completion)
   completedEvents: Record<number, ApiStepEvent[]>  // Chronological events loaded from DB for completed steps
   completedToolCalls: Record<number, { tool: string; arguments: string }[]>  // Fallback: tool calls for old data
+
+  // Worktree state (for user input prompts)
+  userInputRequest: UserInputRequest | null
+  worktreeStatus: string | null  // 'creating' | 'ready' | etc.
 
   // Loading states
   loading: {
@@ -61,6 +65,11 @@ interface StoreState {
 
   setLoading: (key: keyof StoreState['loading'], value: boolean) => void
 
+  // Worktree actions
+  setUserInputRequest: (request: UserInputRequest | null) => void
+  setWorktreeStatus: (status: string | null) => void
+  clearUserInputRequest: () => void
+
   // API actions
   fetchAppConfig: () => Promise<void>
   fetchTickets: () => Promise<void>
@@ -90,6 +99,9 @@ export const useStore = create<StoreState>((set, get) => ({
   stepOutputs: {},
   completedEvents: {},
   completedToolCalls: {},
+
+  userInputRequest: null,
+  worktreeStatus: null,
 
   loading: {
     tickets: false,
@@ -190,6 +202,11 @@ export const useStore = create<StoreState>((set, get) => ({
   setLoading: (key, value) => set((state) => ({
     loading: { ...state.loading, [key]: value },
   })),
+
+  // Worktree actions
+  setUserInputRequest: (request) => set({ userInputRequest: request }),
+  setWorktreeStatus: (status) => set({ worktreeStatus: status }),
+  clearUserInputRequest: () => set({ userInputRequest: null }),
 
   // API actions
   fetchAppConfig: async () => {
@@ -403,6 +420,40 @@ export const useStore = create<StoreState>((set, get) => ({
 
       case 'ticket_updated':
         state.fetchTickets()
+        break
+
+      // Worktree events
+      case 'worktree_session_creating':
+        set({ worktreeStatus: 'creating' })
+        break
+
+      case 'worktree_setup_started':
+        set({ worktreeStatus: 'setup' })
+        break
+
+      case 'worktree_session_ready':
+        set({ worktreeStatus: 'ready', userInputRequest: null })
+        break
+
+      case 'pipeline_needs_input':
+        set((s) => ({
+          currentPipeline: s.currentPipeline
+            ? { ...s.currentPipeline, status: 'needs_user_input' }
+            : null,
+          worktreeStatus: 'needs_user_input',
+          userInputRequest: {
+            input_type: message.input_type as 'setup_commands',
+            repos: message.repos,
+          },
+        }))
+        break
+
+      case 'worktree_pr_merged':
+        // Could update UI to show merge status
+        break
+
+      case 'worktree_session_cleaned':
+        set({ worktreeStatus: 'cleaned' })
         break
 
       default:

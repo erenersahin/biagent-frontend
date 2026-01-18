@@ -5,6 +5,7 @@ import * as api from '../lib/api'
 import type { Ticket } from '../types'
 import StepCard from '../components/StepCard'
 import PipelineControls from '../components/PipelineControls'
+import UserInputPrompt from '../components/UserInputPrompt'
 
 // JIRA status colors based on board
 const JIRA_STATUS_COLORS: Record<string, { bg: string; text: string }> = {
@@ -38,6 +39,8 @@ export default function TicketDetail() {
   const stepOutputs = useStore((state) => state.stepOutputs)
   const completedEvents = useStore((state) => state.completedEvents)
   const completedToolCalls = useStore((state) => state.completedToolCalls)
+  const userInputRequest = useStore((state) => state.userInputRequest)
+  const worktreeStatus = useStore((state) => state.worktreeStatus)
   const setCurrentPipeline = useStore((state) => state.setCurrentPipeline)
   const setCurrentSteps = useStore((state) => state.setCurrentSteps)
   const clearStepOutputs = useStore((state) => state.clearStepOutputs)
@@ -266,6 +269,11 @@ export default function TicketDetail() {
                 Step {currentPipeline.current_step} of {maxSteps} &bull;{' '}
                 {currentPipeline.total_tokens.toLocaleString()} tokens &bull; $
                 {currentPipeline.total_cost.toFixed(4)}
+                {worktreeStatus && worktreeStatus !== 'ready' && (
+                  <span className="ml-2">
+                    &bull; Worktree: <span className="text-primary">{worktreeStatus}</span>
+                  </span>
+                )}
               </p>
             </div>
 
@@ -276,6 +284,11 @@ export default function TicketDetail() {
               onResume={handleResume}
             />
           </div>
+
+          {/* User Input Prompt (when pipeline needs setup commands) */}
+          {currentPipeline.status === 'needs_user_input' && userInputRequest && (
+            <UserInputPrompt pipelineId={currentPipeline.id} />
+          )}
 
           {/* Steps */}
           <div className="space-y-4">

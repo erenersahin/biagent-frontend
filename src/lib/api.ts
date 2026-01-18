@@ -159,6 +159,20 @@ export async function getStepHistory(pipelineId: string, stepNumber: number) {
   return fetchJson<{ history: object[] }>(`/pipelines/${pipelineId}/steps/${stepNumber}/history`)
 }
 
+export async function provideUserInput(
+  pipelineId: string,
+  inputType: string,
+  data: Record<string, string[]>
+) {
+  return fetchJson<{ status: string; pipeline_id: string; input_type: string; message: string }>(
+    `/pipelines/${pipelineId}/provide-input`,
+    {
+      method: 'POST',
+      body: JSON.stringify({ input_type: inputType, data }),
+    }
+  )
+}
+
 // Session API
 export async function restoreSession(sessionId?: string) {
   const url = sessionId ? `/session/restore?session_id=${sessionId}` : '/session/restore'
