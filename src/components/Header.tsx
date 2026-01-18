@@ -15,11 +15,10 @@ export default function Header() {
             fill="none"
             xmlns="http://www.w3.org/2000/svg"
           >
-            <rect width="32" height="32" rx="4" fill="currentColor" />
-            <path
-              d="M8 8h16v4H8V8zm0 6h12v4H8v-4zm0 6h14v4H8v-4z"
-              fill="#202020"
-            />
+            <rect width="32" height="32" rx="6" fill="#202020" />
+            <circle cx="10" cy="16" r="4" fill="#F0FB29" />
+            <circle cx="22" cy="16" r="4" fill="#F0FB29" />
+            <rect x="14" y="15" width="4" height="2" fill="#F0FB29" />
           </svg>
           <span className="font-mono font-medium text-lg tracking-wider">BIAGENT</span>
         </Link>
