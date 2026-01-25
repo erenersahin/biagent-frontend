@@ -133,6 +133,7 @@ export type WSMessage =
   | { type: 'pipeline_failed'; pipeline_id: string; step: number; error: string }
   | { type: 'tool_call_started'; pipeline_id: string; step: number; tool: string; tool_use_id?: string; arguments: object }
   | { type: 'subagent_tool_call'; pipeline_id: string; step: number; parent_tool_use_id: string; tool_use_id: string; tool_name: string; arguments: object; timestamp: string }
+  | { type: 'subagent_text'; pipeline_id: string; step: number; parent_tool_use_id: string; text: string; timestamp: string }
   | { type: 'sync_complete'; count: number; timestamp: string }
   | { type: 'ticket_updated'; id: string; key: string; changes: string[] }
   | { type: 'step_skipped'; pipeline_id: string; step: number; reason: string; next_step: number }
@@ -302,6 +303,18 @@ export interface Clarification {
 
 // Subagent Types
 
+// Subagent event (text or tool call, chronologically ordered)
+export interface SubagentEvent {
+  type: 'text' | 'tool_call'
+  timestamp: string
+  // For text events
+  content?: string
+  // For tool call events
+  tool_use_id?: string
+  tool_name?: string
+  arguments?: Record<string, unknown>
+}
+
 // Subagent tool call (streamed in real-time)
 export interface SubagentToolCall {
   tool_use_id: string
@@ -313,7 +326,9 @@ export interface SubagentToolCall {
 // Subagent activity grouped by parent Task
 export interface SubagentActivity {
   parent_tool_use_id: string   // Links to Task's tool_use_id
-  tool_calls: SubagentToolCall[]
+  subagent_type?: string       // e.g., "context_agent"
+  events: SubagentEvent[]      // Chronological events (text + tool calls)
+  tool_calls: SubagentToolCall[]  // Keep for backwards compatibility
   status: 'running' | 'completed'
 }
 

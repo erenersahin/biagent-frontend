@@ -175,10 +175,20 @@ export default function TicketDetail() {
         if (!grouped[tc.step_number][tc.parent_tool_use_id]) {
           grouped[tc.step_number][tc.parent_tool_use_id] = {
             parent_tool_use_id: tc.parent_tool_use_id,
+            events: [],
             tool_calls: [],
             status: 'completed',  // Already done if loading from API
           }
         }
+        // Add to both events (chronological) and tool_calls (backwards compat)
+        const toolCallEvent = {
+          type: 'tool_call' as const,
+          timestamp: tc.created_at,
+          tool_use_id: tc.tool_use_id,
+          tool_name: tc.tool_name,
+          arguments: tc.arguments,
+        }
+        grouped[tc.step_number][tc.parent_tool_use_id].events.push(toolCallEvent)
         grouped[tc.step_number][tc.parent_tool_use_id].tool_calls.push({
           tool_use_id: tc.tool_use_id,
           tool_name: tc.tool_name,

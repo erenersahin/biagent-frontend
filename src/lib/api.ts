@@ -137,6 +137,7 @@ export interface StepEvent {
   tool?: string     // For tool_call events
   arguments?: object
   timestamp?: string  // ISO timestamp
+  tool_use_id?: string  // SDK tool_use_id for linking subagent calls
 }
 
 export interface AllStepOutputs {

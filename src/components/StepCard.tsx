@@ -3,7 +3,7 @@ import ReactMarkdown from 'react-markdown'
 import remarkGfm from 'remark-gfm'
 import { Prism as SyntaxHighlighter } from 'react-syntax-highlighter'
 import { oneLight } from 'react-syntax-highlighter/dist/esm/styles/prism'
-import type { PipelineStep, SubagentActivity } from '../types'
+import type { PipelineStep, SubagentActivity, SubagentEvent } from '../types'
 import type { StepEvent } from '../lib/store'
 import type { StepEvent as ApiStepEvent } from '../lib/api'
 import RecoveryOptions from './RecoveryOptions'
@@ -32,121 +32,268 @@ const ArgsTable = ({ args }: { args: object }) => {
   )
 }
 
-// Compact tool call display with optional subagent activity
-const ToolCallItem = ({
-  tool,
+// Subagent conversation panel - shows text + tool calls like a mini StepCard
+const SubagentConversationPanel = ({
+  activity,
   args,
-  isRunning,
-  subagentActivity,
 }: {
-  tool: string
+  activity: SubagentActivity
   args: object
-  isRunning?: boolean
-  subagentActivity?: SubagentActivity
 }) => {
   const [expanded, setExpanded] = useState(false)
-  const [subagentExpanded, setSubagentExpanded] = useState(true)  // Auto-expand subagent activity
-  const argCount = Object.keys(args).length
-  const isTask = tool === 'Task'
-  const hasSubagentActivity = isTask && subagentActivity && subagentActivity.tool_calls.length > 0
+  const subagentType = (args as { subagent_type?: string }).subagent_type || 'subagent'
+  const description = (args as { description?: string }).description || ''
+  const events = activity.events || []
+  const isRunning = activity.status === 'running'
+  const toolCount = events.filter(e => e.type === 'tool_call').length
+
+  // Format subagent name for display
+  const formatAgentName = (name: string) => {
+    return name
+      .replace(/_/g, ' ')
+      .replace(/agent$/i, '')
+      .trim()
+      .split(' ')
+      .map(w => w.charAt(0).toUpperCase() + w.slice(1))
+      .join(' ')
+  }
 
   return (
-    <div className="mb-2">
-      <div className="flex items-center gap-2">
-        <button
-          className={`inline-flex items-center gap-1.5 px-2 py-1 rounded text-xs font-mono transition-colors border ${isRunning
-            ? 'bg-info/20 text-primary-dark border-info hover:bg-info/30'
-            : 'bg-bg-page text-text-body border-transparent hover:border-gray-200'
-            }`}
-          onClick={() => setExpanded(!expanded)}
-        >
-          {isRunning && (
-            <svg className="w-3 h-3 animate-spin" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15" />
+    <div className="mb-3 rounded-lg border border-purple-200/50 bg-purple-50/30 overflow-hidden">
+      {/* Header - clickable to expand/collapse */}
+      <button
+        onClick={() => setExpanded(!expanded)}
+        className="w-full flex items-center justify-between px-3 py-2 text-left hover:bg-purple-50/50 transition-colors"
+      >
+        <div className="flex items-center gap-2">
+          {isRunning ? (
+            <div className="w-2 h-2 rounded-full bg-purple-500 animate-pulse" />
+          ) : (
+            <svg className="w-4 h-4 text-purple-500" fill="currentColor" viewBox="0 0 20 20">
+              <path fillRule="evenodd" d="M16.707 5.293a1 1 0 010 1.414l-8 8a1 1 0 01-1.414 0l-4-4a1 1 0 011.414-1.414L8 12.586l7.293-7.293a1 1 0 011.414 0z" clipRule="evenodd" />
             </svg>
           )}
-          <span>{tool}</span>
-          <span className="text-text-muted">({argCount})</span>
-          <svg className={`w-3 h-3 text-text-muted transition-transform ${expanded ? 'rotate-180' : ''}`} fill="none" stroke="currentColor" viewBox="0 0 24 24">
+          <span className="text-sm font-medium text-purple-700">
+            {formatAgentName(subagentType)}
+          </span>
+          {description && (
+            <span className="text-xs text-purple-500/70 truncate max-w-[200px]">
+              — {description}
+            </span>
+          )}
+        </div>
+        <div className="flex items-center gap-2">
+          <span className="text-xs text-purple-500/60">
+            {toolCount} tools
+          </span>
+          <svg
+            className={`w-4 h-4 text-purple-400 transition-transform ${expanded ? 'rotate-180' : ''}`}
+            fill="none"
+            stroke="currentColor"
+            viewBox="0 0 24 24"
+          >
             <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 9l-7 7-7-7" />
           </svg>
-        </button>
-
-        {/* Subagent activity toggle for Task tool */}
-        {hasSubagentActivity && (
-          <button
-            onClick={() => setSubagentExpanded(!subagentExpanded)}
-            className="text-xs text-text-muted hover:text-primary-dark flex items-center gap-1"
-          >
-            <span>{subagentActivity.tool_calls.length} subagent tools</span>
-            {subagentActivity.status === 'running' && (
-              <span className="w-1.5 h-1.5 bg-info rounded-full animate-pulse" />
-            )}
-            <svg className={`w-3 h-3 transition-transform ${subagentExpanded ? 'rotate-180' : ''}`} fill="none" stroke="currentColor" viewBox="0 0 24 24">
-              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 9l-7 7-7-7" />
-            </svg>
-          </button>
-        )}
-      </div>
-
-      {expanded && (
-        <div className="mt-1 ml-2 p-2 bg-bg-page rounded max-h-32 overflow-auto">
-          <ArgsTable args={args} />
         </div>
-      )}
+      </button>
 
-      {/* Nested subagent tool calls */}
-      {hasSubagentActivity && subagentExpanded && (
-        <div className="ml-4 pl-3 border-l-2 border-info/20 mt-1 space-y-0.5">
-          {subagentActivity.tool_calls.map((tc, i) => (
-            <SubagentToolCallItem key={tc.tool_use_id || i} toolCall={tc} />
-          ))}
-          {subagentActivity.status === 'running' && (
-            <div className="text-text-muted/50 text-xs animate-pulse py-0.5 flex items-center gap-1">
-              <span>↳</span>
-              <span>executing...</span>
-            </div>
-          )}
+      {/* Expanded content - subagent conversation */}
+      {expanded && (
+        <div className="px-3 pb-3 border-t border-purple-200/30 max-h-64 overflow-y-auto">
+          <div className="pt-2 space-y-2">
+            {events.length === 0 && isRunning && (
+              <p className="text-xs text-purple-400 italic">
+                Subagent starting...
+                <span className="streaming-cursor" />
+              </p>
+            )}
+            {events.map((event, idx) => (
+              <SubagentEventItem
+                key={idx}
+                event={event}
+                showCursor={isRunning && idx === events.length - 1 && event.type === 'text'}
+              />
+            ))}
+            {isRunning && events.length > 0 && events[events.length - 1].type !== 'text' && (
+              <p className="text-xs text-purple-400 italic animate-pulse">
+                Working...
+              </p>
+            )}
+          </div>
         </div>
       )}
     </div>
   )
 }
 
-// Subagent tool call display (compact inline)
-const SubagentToolCallItem = ({ toolCall }: { toolCall: SubagentActivity['tool_calls'][0] }) => {
+// Subagent event item (text or tool call)
+const SubagentEventItem = ({
+  event,
+  showCursor,
+}: {
+  event: SubagentEvent
+  showCursor: boolean
+}) => {
   const [expanded, setExpanded] = useState(false)
 
-  // Extract useful preview from arguments
-  const getArgPreview = () => {
-    const args = toolCall.arguments
-    if (args.pattern) return `"${String(args.pattern).slice(0, 30)}${String(args.pattern).length > 30 ? '...' : ''}"`
-    if (args.file_path) {
-      const path = String(args.file_path)
-      return path.split('/').pop() || path.slice(-30)
-    }
-    if (args.query) return `"${String(args.query).slice(0, 25)}${String(args.query).length > 25 ? '...' : ''}"`
-    return null
+  if (event.type === 'text' && event.content) {
+    // Render text with markdown
+    return (
+      <div className="text-xs text-gray-700 leading-relaxed">
+        <ReactMarkdown
+          remarkPlugins={[remarkGfm]}
+          components={{
+            p: ({ children }) => <p className="mb-1">{children}{showCursor && <span className="streaming-cursor" />}</p>,
+            code: ({ children }) => <code className="bg-purple-100 px-1 rounded text-[10px]">{children}</code>,
+            strong: ({ children }) => <strong className="font-medium">{children}</strong>,
+            ul: ({ children }) => <ul className="list-disc ml-3 mb-1">{children}</ul>,
+            ol: ({ children }) => <ol className="list-decimal ml-3 mb-1">{children}</ol>,
+            li: ({ children }) => <li className="mb-0.5">{children}</li>,
+          }}
+        >
+          {event.content}
+        </ReactMarkdown>
+      </div>
+    )
   }
 
-  const preview = getArgPreview()
+  if (event.type === 'tool_call' && event.tool_name) {
+    // Get preview from arguments
+    const getArgPreview = () => {
+      const args = event.arguments || {}
+      if (args.pattern) return `"${String(args.pattern).slice(0, 25)}..."`
+      if (args.file_path) {
+        const path = String(args.file_path)
+        return path.split('/').pop() || path.slice(-25)
+      }
+      if (args.query) return `"${String(args.query).slice(0, 20)}..."`
+      if (args.command) return String(args.command).slice(0, 30)
+      return null
+    }
 
+    const preview = getArgPreview()
+
+    return (
+      <div className="py-0.5">
+        <button
+          onClick={() => setExpanded(!expanded)}
+          className="flex items-center gap-1.5 text-xs text-purple-600 hover:text-purple-800 font-mono"
+        >
+          <svg className="w-3 h-3 text-purple-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M10 20l4-16m4 4l4 4-4 4M6 16l-4-4 4-4" />
+          </svg>
+          <span className="font-medium">{event.tool_name}</span>
+          {preview && (
+            <span className="text-purple-400 truncate max-w-[150px]">{preview}</span>
+          )}
+          <svg
+            className={`w-2.5 h-2.5 text-purple-400 transition-transform ${expanded ? 'rotate-180' : ''}`}
+            fill="none"
+            stroke="currentColor"
+            viewBox="0 0 24 24"
+          >
+            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 9l-7 7-7-7" />
+          </svg>
+        </button>
+        {expanded && event.arguments && (
+          <div className="ml-4 mt-1 p-2 bg-purple-50 rounded text-[10px] max-h-20 overflow-auto">
+            <ArgsTable args={event.arguments} />
+          </div>
+        )}
+      </div>
+    )
+  }
+
+  return null
+}
+
+// Regular tool call display (non-Task tools)
+const ToolCallItem = ({
+  tool,
+  args,
+  isRunning,
+  subagentActivity,
+  isCompleted,
+}: {
+  tool: string
+  args: object
+  isRunning?: boolean
+  subagentActivity?: SubagentActivity
+  isCompleted?: boolean  // True when viewing completed step events
+}) => {
+  const [expanded, setExpanded] = useState(false)
+  const argCount = Object.keys(args).length
+  const isTask = tool === 'Task'
+
+  // For Task tools with subagent activity, render as conversation panel
+  if (isTask && subagentActivity) {
+    return <SubagentConversationPanel activity={subagentActivity} args={args} />
+  }
+
+  // For Task tools without activity yet (or completed without data), show appropriate state
+  if (isTask) {
+    const subagentType = (args as { subagent_type?: string }).subagent_type || 'subagent'
+    const formatAgentName = (name: string) => {
+      return name.replace(/_/g, ' ').replace(/agent$/i, '').trim()
+        .split(' ').map(w => w.charAt(0).toUpperCase() + w.slice(1)).join(' ')
+    }
+
+    // If step is completed but no subagent activity data, show as completed
+    if (isCompleted) {
+      return (
+        <div className="mb-3 rounded-lg border border-purple-200/50 bg-purple-50/30 px-3 py-2">
+          <div className="flex items-center gap-2">
+            <svg className="w-4 h-4 text-purple-500" fill="currentColor" viewBox="0 0 20 20">
+              <path fillRule="evenodd" d="M16.707 5.293a1 1 0 010 1.414l-8 8a1 1 0 01-1.414 0l-4-4a1 1 0 011.414-1.414L8 12.586l7.293-7.293a1 1 0 011.414 0z" clipRule="evenodd" />
+            </svg>
+            <span className="text-sm font-medium text-purple-700">
+              {formatAgentName(subagentType)}
+            </span>
+            <span className="text-xs text-purple-500/60">completed</span>
+          </div>
+        </div>
+      )
+    }
+
+    // Still running/pending - show starting state
+    return (
+      <div className="mb-3 rounded-lg border border-purple-200/50 bg-purple-50/30 px-3 py-2">
+        <div className="flex items-center gap-2">
+          <div className="w-2 h-2 rounded-full bg-purple-500 animate-pulse" />
+          <span className="text-sm font-medium text-purple-700">
+            {formatAgentName(subagentType)}
+          </span>
+          <span className="text-xs text-purple-400 italic">starting...</span>
+        </div>
+      </div>
+    )
+  }
+
+  // Regular tool call display
   return (
-    <div className="py-0.5">
+    <div className="mb-2">
       <button
+        className={`inline-flex items-center gap-1.5 px-2 py-1 rounded text-xs font-mono transition-colors border ${isRunning
+          ? 'bg-info/20 text-primary-dark border-info hover:bg-info/30'
+          : 'bg-bg-page text-text-body border-transparent hover:border-gray-200'
+          }`}
         onClick={() => setExpanded(!expanded)}
-        className="flex items-center gap-2 text-xs text-text-muted hover:text-text-body"
       >
-        <span className="text-info/50">↳</span>
-        <span className="text-info/70 font-mono">{toolCall.tool_name}</span>
-        {preview && <span className="truncate opacity-60 max-w-[200px]">{preview}</span>}
-        <svg className={`w-2.5 h-2.5 text-text-muted/50 transition-transform ${expanded ? 'rotate-180' : ''}`} fill="none" stroke="currentColor" viewBox="0 0 24 24">
+        {isRunning && (
+          <svg className="w-3 h-3 animate-spin" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15" />
+          </svg>
+        )}
+        <span>{tool}</span>
+        <span className="text-text-muted">({argCount})</span>
+        <svg className={`w-3 h-3 text-text-muted transition-transform ${expanded ? 'rotate-180' : ''}`} fill="none" stroke="currentColor" viewBox="0 0 24 24">
           <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 9l-7 7-7-7" />
         </svg>
       </button>
+
       {expanded && (
-        <div className="ml-4 mt-1 p-2 bg-bg-page rounded text-xs max-h-24 overflow-auto">
-          <ArgsTable args={toolCall.arguments} />
+        <div className="mt-1 ml-2 p-2 bg-bg-page rounded max-h-32 overflow-auto">
+          <ArgsTable args={args} />
         </div>
       )}
     </div>
@@ -226,15 +373,38 @@ const TextBlock = ({ content }: { content: string }) => {
 }
 
 // Render a single event
-const EventItem = ({ event }: { event: ApiStepEvent }) => {
+const EventItem = ({
+  event,
+  subagentActivities,
+}: {
+  event: ApiStepEvent
+  subagentActivities?: Record<string, SubagentActivity>
+}) => {
   if (event.type === 'tool_call') {
-    return <ToolCallItem tool={event.tool || ''} args={event.arguments || {}} />
+    // Look up subagent activity by tool_use_id
+    const subagentActivity = event.tool_use_id && subagentActivities
+      ? subagentActivities[event.tool_use_id]
+      : undefined
+    return (
+      <ToolCallItem
+        tool={event.tool || ''}
+        args={event.arguments || {}}
+        subagentActivity={subagentActivity}
+        isCompleted={true}
+      />
+    )
   }
   return <TextBlock content={event.content || ''} />
 }
 
 // Completed events view - shows last text as output, with "show all" for history
-const CompletedEventsView = ({ events }: { events: ApiStepEvent[] }) => {
+const CompletedEventsView = ({
+  events,
+  subagentActivities,
+}: {
+  events: ApiStepEvent[]
+  subagentActivities?: Record<string, SubagentActivity>
+}) => {
   const [showAll, setShowAll] = useState(false)
 
   // Find the last text event (the output)
@@ -255,7 +425,7 @@ const CompletedEventsView = ({ events }: { events: ApiStepEvent[] }) => {
           </button>
         )}
         {events.map((event, idx) => (
-          <EventItem key={idx} event={event} />
+          <EventItem key={idx} event={event} subagentActivities={subagentActivities} />
         ))}
       </>
     )
@@ -274,10 +444,10 @@ const CompletedEventsView = ({ events }: { events: ApiStepEvent[] }) => {
           </svg>
         </button>
       )}
-      {lastTextEvent && <EventItem event={lastTextEvent} />}
+      {lastTextEvent && <EventItem event={lastTextEvent} subagentActivities={subagentActivities} />}
       {!lastTextEvent && events.length > 0 && (
         // If no text event, show the last event whatever it is
-        <EventItem event={events[events.length - 1]} />
+        <EventItem event={events[events.length - 1]} subagentActivities={subagentActivities} />
       )}
     </>
   )
@@ -584,7 +754,7 @@ export default function StepCard({
               <>
                 {completedEvents.length > 0 ? (
                   // New format: show last output with "show all" for history
-                  <CompletedEventsView events={completedEvents} />
+                  <CompletedEventsView events={completedEvents} subagentActivities={subagentActivities} />
                 ) : (
                   // Fallback: old format - just show text output
                   completedOutput && <TextBlock content={completedOutput} />

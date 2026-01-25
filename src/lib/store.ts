@@ -15,6 +15,7 @@ import type {
   OfflineEvent,
   SubagentActivity,
   SubagentToolCall,
+  SubagentEvent,
 } from '../types'
 import * as api from './api'
 import type { AppConfig, StepEvent as ApiStepEvent } from './api'
@@ -109,6 +110,7 @@ interface StoreState {
   setCompletedToolCalls: (stepNum: number, toolCalls: { tool: string; arguments: string }[]) => void
   clearStepOutputs: () => void
   appendSubagentToolCall: (step: number, parentToolUseId: string, toolCall: SubagentToolCall) => void
+  appendSubagentText: (step: number, parentToolUseId: string, text: string, timestamp: string) => void
   markSubagentCompleted: (step: number, parentToolUseId: string) => void
   clearStepSubagents: (step: number) => void
   setStepSubagentActivities: (activities: Record<number, Record<string, SubagentActivity>>) => void
@@ -298,8 +300,17 @@ export const useStore = create<StoreState>((set, get) => ({
     const stepActivities = state.stepSubagentActivities[step] || {}
     const activity = stepActivities[parentToolUseId] || {
       parent_tool_use_id: parentToolUseId,
+      events: [],
       tool_calls: [],
       status: 'running' as const,
+    }
+    // Add to both events (chronological) and tool_calls (backwards compat)
+    const newEvent: SubagentEvent = {
+      type: 'tool_call',
+      timestamp: toolCall.timestamp,
+      tool_use_id: toolCall.tool_use_id,
+      tool_name: toolCall.tool_name,
+      arguments: toolCall.arguments,
     }
     return {
       stepSubagentActivities: {
@@ -308,7 +319,61 @@ export const useStore = create<StoreState>((set, get) => ({
           ...stepActivities,
           [parentToolUseId]: {
             ...activity,
+            events: [...(activity.events || []), newEvent],
             tool_calls: [...activity.tool_calls, toolCall],
+          },
+        },
+      },
+    }
+  }),
+
+  appendSubagentText: (step, parentToolUseId, text, timestamp) => set((state) => {
+    const stepActivities = state.stepSubagentActivities[step] || {}
+    const activity = stepActivities[parentToolUseId] || {
+      parent_tool_use_id: parentToolUseId,
+      events: [],
+      tool_calls: [],
+      status: 'running' as const,
+    }
+    const events = activity.events || []
+    const lastEvent = events[events.length - 1]
+
+    // Merge consecutive text events
+    if (lastEvent && lastEvent.type === 'text') {
+      const updatedEvents = [...events]
+      updatedEvents[updatedEvents.length - 1] = {
+        ...lastEvent,
+        content: (lastEvent.content || '') + text,
+        timestamp,
+      }
+      return {
+        stepSubagentActivities: {
+          ...state.stepSubagentActivities,
+          [step]: {
+            ...stepActivities,
+            [parentToolUseId]: {
+              ...activity,
+              events: updatedEvents,
+            },
+          },
+        },
+      }
+    }
+
+    // Add new text event
+    const newEvent: SubagentEvent = {
+      type: 'text',
+      timestamp,
+      content: text,
+    }
+    return {
+      stepSubagentActivities: {
+        ...state.stepSubagentActivities,
+        [step]: {
+          ...stepActivities,
+          [parentToolUseId]: {
+            ...activity,
+            events: [...events, newEvent],
           },
         },
       },
@@ -578,6 +643,16 @@ export const useStore = create<StoreState>((set, get) => ({
           arguments: message.arguments as Record<string, unknown>,
           timestamp: message.timestamp,
         })
+        break
+
+      case 'subagent_text':
+        // Append subagent text to activity tracker
+        state.appendSubagentText(
+          message.step,
+          message.parent_tool_use_id,
+          message.text,
+          message.timestamp
+        )
         break
 
       case 'step_completed':
