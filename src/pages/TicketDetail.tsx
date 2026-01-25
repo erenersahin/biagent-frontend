@@ -6,6 +6,9 @@ import type { Ticket } from '../types'
 import StepCard from '../components/StepCard'
 import PipelineControls from '../components/PipelineControls'
 import UserInputPrompt from '../components/UserInputPrompt'
+import ClarificationPrompt from '../components/ClarificationPrompt'
+import ShareButton from '../components/ShareButton'
+import TicketDescription from '../components/TicketDescription'
 
 // JIRA status colors based on board
 const JIRA_STATUS_COLORS: Record<string, { bg: string; text: string }> = {
@@ -39,8 +42,10 @@ export default function TicketDetail() {
   const stepOutputs = useStore((state) => state.stepOutputs)
   const completedEvents = useStore((state) => state.completedEvents)
   const completedToolCalls = useStore((state) => state.completedToolCalls)
+  const stepSubagentActivities = useStore((state) => state.stepSubagentActivities)
   const userInputRequest = useStore((state) => state.userInputRequest)
   const worktreeStatus = useStore((state) => state.worktreeStatus)
+  const pendingClarification = useStore((state) => state.pendingClarification)
   const setCurrentPipeline = useStore((state) => state.setCurrentPipeline)
   const setCurrentSteps = useStore((state) => state.setCurrentSteps)
   const clearStepOutputs = useStore((state) => state.clearStepOutputs)
@@ -121,6 +126,7 @@ export default function TicketDetail() {
     const setCompletedEvents = useStore.getState().setCompletedEvents
     const setCompletedToolCalls = useStore.getState().setCompletedToolCalls
     const appendToolCallEvent = useStore.getState().appendToolCallEvent
+    const setStepSubagentActivities = useStore.getState().setStepSubagentActivities
 
     try {
       // Single batch request instead of 8 individual requests
@@ -136,7 +142,7 @@ export default function TicketDetail() {
         // For running step: populate stepEvents from tool_calls (they're saved in real-time)
         if (stepNum === runningStepNum && stepData.tool_calls && stepData.tool_calls.length > 0) {
           for (const tc of stepData.tool_calls) {
-            appendToolCallEvent(stepNum, tc.tool, JSON.parse(tc.arguments))
+            appendToolCallEvent(stepNum, tc.tool, JSON.parse(tc.arguments), tc.tool_use_id)
           }
         }
         // For completed steps: prefer events (chronological) over tool_calls (fallback)
@@ -156,6 +162,37 @@ export default function TicketDetail() {
       }
     } catch {
       // Pipeline may not have outputs yet
+    }
+
+    // Load subagent tool calls for real-time activity display
+    try {
+      const subagentToolCalls = await api.getPipelineSubagentToolCalls(pipelineId)
+
+      // Group by step_number -> parent_tool_use_id
+      const grouped: Record<number, Record<string, import('../types').SubagentActivity>> = {}
+      for (const tc of subagentToolCalls) {
+        if (!grouped[tc.step_number]) grouped[tc.step_number] = {}
+        if (!grouped[tc.step_number][tc.parent_tool_use_id]) {
+          grouped[tc.step_number][tc.parent_tool_use_id] = {
+            parent_tool_use_id: tc.parent_tool_use_id,
+            tool_calls: [],
+            status: 'completed',  // Already done if loading from API
+          }
+        }
+        grouped[tc.step_number][tc.parent_tool_use_id].tool_calls.push({
+          tool_use_id: tc.tool_use_id,
+          tool_name: tc.tool_name,
+          arguments: tc.arguments,
+          timestamp: tc.created_at,
+        })
+      }
+
+      // Set in store
+      if (Object.keys(grouped).length > 0) {
+        setStepSubagentActivities(grouped)
+      }
+    } catch {
+      // No subagent tool calls or error - ignore
     }
   }
 
@@ -262,15 +299,8 @@ export default function TicketDetail() {
         )}
       </div>
 
-      {/* Ticket Description */}
-      {ticket.description && (
-        <div className="card">
-          <h3 className="text-h5 mb-3">Description</h3>
-          <p className="text-text-body whitespace-pre-wrap">
-            {ticket.description}
-          </p>
-        </div>
-      )}
+      {/* Ticket Description with Attachments */}
+      <TicketDescription ticket={ticket} />
 
       {/* Pipeline Section */}
       {currentPipeline && (
@@ -278,29 +308,59 @@ export default function TicketDetail() {
           <div className="flex items-center justify-between">
             <div>
               <p className="section-label mb-1">/ Pipeline</p>
-              <p className="text-sm text-text-muted">
-                Step {currentPipeline.current_step} of {maxSteps} &bull;{' '}
-                {currentPipeline.total_tokens.toLocaleString()} tokens &bull; $
-                {currentPipeline.total_cost.toFixed(4)}
+              <div className="flex items-center gap-4 text-sm text-text-muted">
+                {/* Progress */}
+                <span className="flex items-center gap-1">
+                  <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 5H7a2 2 0 00-2 2v12a2 2 0 002 2h10a2 2 0 002-2V7a2 2 0 00-2-2h-2M9 5a2 2 0 002 2h2a2 2 0 002-2M9 5a2 2 0 012-2h2a2 2 0 012 2" />
+                  </svg>
+                  Step {currentPipeline.current_step}/{maxSteps}
+                </span>
+                {/* Tokens */}
+                <span className="flex items-center gap-1">
+                  <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M7 7h.01M7 3h5c.512 0 1.024.195 1.414.586l7 7a2 2 0 010 2.828l-7 7a2 2 0 01-2.828 0l-7-7A1.994 1.994 0 013 12V7a4 4 0 014-4z" />
+                  </svg>
+                  {currentPipeline.total_tokens.toLocaleString()} tokens
+                </span>
+                {/* Cost */}
+                <span className="flex items-center gap-1 font-mono">
+                  <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 8c-1.657 0-3 .895-3 2s1.343 2 3 2 3 .895 3 2-1.343 2-3 2m0-8c1.11 0 2.08.402 2.599 1M12 8V7m0 1v8m0 0v1m0-1c-1.11 0-2.08-.402-2.599-1M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
+                  </svg>
+                  ${currentPipeline.total_cost.toFixed(4)}
+                </span>
+                {/* Worktree status */}
                 {worktreeStatus && worktreeStatus !== 'ready' && (
-                  <span className="ml-2">
-                    &bull; Worktree: <span className="text-primary">{worktreeStatus}</span>
+                  <span className="flex items-center gap-1">
+                    <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M8 7h12m0 0l-4-4m4 4l-4 4m0 6H4m0 0l4 4m-4-4l4-4" />
+                    </svg>
+                    <span className="text-primary">{worktreeStatus}</span>
                   </span>
                 )}
-              </p>
+              </div>
             </div>
 
-            <PipelineControls
-              status={currentPipeline.status}
-              onStart={handleStart}
-              onPause={handlePause}
-              onResume={handleResume}
-            />
+            <div className="flex items-center gap-3">
+              <ShareButton pipelineId={currentPipeline.id} />
+              <PipelineControls
+                status={currentPipeline.status}
+                onStart={handleStart}
+                onPause={handlePause}
+                onResume={handleResume}
+              />
+            </div>
           </div>
 
           {/* User Input Prompt (when pipeline needs setup commands) */}
           {currentPipeline.status === 'needs_user_input' && userInputRequest && (
             <UserInputPrompt pipelineId={currentPipeline.id} />
+          )}
+
+          {/* Clarification Prompt (when agent needs clarification) */}
+          {currentPipeline.status === 'waiting_for_review' && pendingClarification && (
+            <ClarificationPrompt pipelineId={currentPipeline.id} />
           )}
 
           {/* Steps */}
@@ -315,6 +375,8 @@ export default function TicketDetail() {
                 completedEvents={completedEvents[step.step_number] || []}
                 completedOutput={stepOutputs[step.step_number] || ''}
                 completedToolCalls={completedToolCalls[step.step_number] || []}
+                totalSteps={maxSteps}
+                subagentActivities={stepSubagentActivities[step.step_number] || {}}
               />
             ))}
           </div>

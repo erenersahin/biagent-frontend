@@ -253,6 +253,15 @@ body {
   border-color: var(--color-warning);
 }
 
+.step-card--skipped {
+  border-color: var(--color-pending);
+  opacity: 0.7;
+}
+
+.step-card--waiting {
+  border-color: var(--color-info);
+}
+
 /* Status Dots */
 .status-dot {
   width: 12px;
