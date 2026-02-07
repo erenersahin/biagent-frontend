@@ -12,6 +12,7 @@ export function useWebSocket() {
   const heartbeatIntervalRef = useRef<number | null>(null)
 
   const handleWSMessage = useStore((state) => state.handleWSMessage)
+  const setWsStatus = useStore((state) => state.setWsStatus)
 
   const cleanup = useCallback(() => {
     if (reconnectTimeoutRef.current) {
@@ -32,12 +33,14 @@ export function useWebSocket() {
     }
 
     cleanup()
+    setWsStatus('connecting')
 
     try {
       wsRef.current = new WebSocket(WS_URL)
 
       wsRef.current.onopen = () => {
         console.log('WebSocket connected')
+        setWsStatus('connected')
 
         // Start heartbeat
         heartbeatIntervalRef.current = window.setInterval(() => {
@@ -58,6 +61,7 @@ export function useWebSocket() {
 
       wsRef.current.onclose = () => {
         console.log('WebSocket disconnected, reconnecting...')
+        setWsStatus('disconnected')
         cleanup()
 
         reconnectTimeoutRef.current = window.setTimeout(() => {
@@ -67,15 +71,17 @@ export function useWebSocket() {
 
       wsRef.current.onerror = (error) => {
         console.error('WebSocket error:', error)
+        setWsStatus('disconnected')
       }
     } catch (error) {
       console.error('Failed to connect WebSocket:', error)
+      setWsStatus('disconnected')
 
       reconnectTimeoutRef.current = window.setTimeout(() => {
         connect()
       }, RECONNECT_DELAY)
     }
-  }, [cleanup, handleWSMessage])
+  }, [cleanup, handleWSMessage, setWsStatus])
 
   const disconnect = useCallback(() => {
     cleanup()

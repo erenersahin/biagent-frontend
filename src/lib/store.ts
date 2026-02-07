@@ -1,12 +1,32 @@
 import { create } from 'zustand'
-import type { Ticket, Pipeline, PipelineStep, Tab, TicketStats, WSMessage, UserInputRequest } from '../types'
+import type {
+  Ticket,
+  Pipeline,
+  PipelineStep,
+  Tab,
+  TicketStats,
+  WSMessage,
+  UserInputRequest,
+  CycleType,
+  CyclePhase,
+  PullRequest,
+  ReviewComment,
+  ReviewIteration,
+  OfflineEvent,
+  SubagentActivity,
+  SubagentToolCall,
+  SubagentEvent,
+} from '../types'
 import * as api from './api'
 import type { AppConfig, StepEvent as ApiStepEvent } from './api'
 
 // Event types for chronological streaming display (real-time, timestamp is Date.now())
 export type StepEvent =
   | { type: 'text'; content: string; timestamp: number }
-  | { type: 'tool_call'; tool: string; arguments: object; timestamp: number }
+  | { type: 'tool_call'; tool: string; tool_use_id?: string; arguments: object; timestamp: number }
+
+// WebSocket connection status
+export type WSStatus = 'disconnected' | 'connecting' | 'connected'
 
 interface StoreState {
   // App Config
@@ -29,10 +49,37 @@ interface StoreState {
   stepOutputs: Record<number, string>  // step_number -> final output (preserved after completion)
   completedEvents: Record<number, ApiStepEvent[]>  // Chronological events loaded from DB for completed steps
   completedToolCalls: Record<number, { tool: string; arguments: string }[]>  // Fallback: tool calls for old data
+  stepSubagentActivities: Record<number, Record<string, SubagentActivity>>  // step_number -> parent_tool_use_id -> SubagentActivity
 
   // Worktree state (for user input prompts)
   userInputRequest: UserInputRequest | null
   worktreeStatus: string | null  // 'creating' | 'ready' | etc.
+
+  // WebSocket state
+  wsStatus: WSStatus
+
+  // Clarification state
+  pendingClarification: {
+    id: string
+    stepNumber: number
+    question: string
+    options: string[]
+    context?: string
+  } | null
+
+  // Cycle Types state
+  cycleTypes: CycleType[]
+  currentCycleType: string | null
+  cyclePhases: CyclePhase[]
+
+  // Code Review state
+  currentPR: PullRequest | null
+  reviewComments: ReviewComment[]
+  reviewIterations: ReviewIteration[]
+
+  // Offline Events state
+  offlineEvents: OfflineEvent[]
+  showOfflineBanner: boolean
 
   // Loading states
   loading: {
@@ -56,19 +103,50 @@ interface StoreState {
   setCurrentPipeline: (pipeline: Pipeline | null) => void
   setCurrentSteps: (steps: PipelineStep[]) => void
   appendTextEvent: (step: number, text: string) => void
-  appendToolCallEvent: (step: number, tool: string, args: object) => void
+  appendToolCallEvent: (step: number, tool: string, args: object, toolUseId?: string) => void
   clearStepEvents: (step: number) => void
   setStepOutputs: (outputs: Record<number, string>) => void
   setCompletedEvents: (stepNum: number, events: ApiStepEvent[]) => void
   setCompletedToolCalls: (stepNum: number, toolCalls: { tool: string; arguments: string }[]) => void
   clearStepOutputs: () => void
+  appendSubagentToolCall: (step: number, parentToolUseId: string, toolCall: SubagentToolCall) => void
+  appendSubagentText: (step: number, parentToolUseId: string, text: string, timestamp: string) => void
+  markSubagentCompleted: (step: number, parentToolUseId: string) => void
+  clearStepSubagents: (step: number) => void
+  setStepSubagentActivities: (activities: Record<number, Record<string, SubagentActivity>>) => void
 
   setLoading: (key: keyof StoreState['loading'], value: boolean) => void
+
+  // WebSocket actions
+  setWsStatus: (status: WSStatus) => void
 
   // Worktree actions
   setUserInputRequest: (request: UserInputRequest | null) => void
   setWorktreeStatus: (status: string | null) => void
   clearUserInputRequest: () => void
+
+  // Clarification actions
+  setPendingClarification: (clarification: StoreState['pendingClarification']) => void
+  clearPendingClarification: () => void
+
+  // Cycle Types actions
+  setCycleTypes: (types: CycleType[]) => void
+  setCurrentCycleType: (cycleType: string | null) => void
+  setCyclePhases: (phases: CyclePhase[]) => void
+  fetchCycleTypes: () => Promise<void>
+  fetchCyclePhases: (cycleType: string) => Promise<void>
+
+  // Code Review actions
+  setCurrentPR: (pr: PullRequest | null) => void
+  setReviewComments: (comments: ReviewComment[]) => void
+  setReviewIterations: (iterations: ReviewIteration[]) => void
+  fetchPipelineReviews: (pipelineId: string) => Promise<void>
+
+  // Offline Events actions
+  setOfflineEvents: (events: OfflineEvent[]) => void
+  addOfflineEvent: (event: OfflineEvent) => void
+  setShowOfflineBanner: (show: boolean) => void
+  acknowledgeOfflineEvents: (eventIds: string[]) => Promise<void>
 
   // API actions
   fetchAppConfig: () => Promise<void>
@@ -99,9 +177,28 @@ export const useStore = create<StoreState>((set, get) => ({
   stepOutputs: {},
   completedEvents: {},
   completedToolCalls: {},
+  stepSubagentActivities: {},
 
   userInputRequest: null,
   worktreeStatus: null,
+
+  wsStatus: 'disconnected',
+
+  pendingClarification: null,
+
+  // Cycle Types
+  cycleTypes: [],
+  currentCycleType: null,
+  cyclePhases: [],
+
+  // Code Review
+  currentPR: null,
+  reviewComments: [],
+  reviewIterations: [],
+
+  // Offline Events
+  offlineEvents: [],
+  showOfflineBanner: false,
 
   loading: {
     tickets: false,
@@ -169,12 +266,12 @@ export const useStore = create<StoreState>((set, get) => ({
     }
   }),
 
-  appendToolCallEvent: (step, tool, args) => set((state) => {
+  appendToolCallEvent: (step, tool, args, toolUseId?: string) => set((state) => {
     const events = state.stepEvents[step] || []
     return {
       stepEvents: {
         ...state.stepEvents,
-        [step]: [...events, { type: 'tool_call' as const, tool, arguments: args, timestamp: Date.now() }],
+        [step]: [...events, { type: 'tool_call' as const, tool, tool_use_id: toolUseId, arguments: args, timestamp: Date.now() }],
       },
     }
   }),
@@ -197,16 +294,204 @@ export const useStore = create<StoreState>((set, get) => ({
     completedToolCalls: { ...state.completedToolCalls, [stepNum]: toolCalls }
   })),
 
-  clearStepOutputs: () => set({ stepOutputs: {}, completedEvents: {}, completedToolCalls: {} }),
+  clearStepOutputs: () => set({ stepOutputs: {}, completedEvents: {}, completedToolCalls: {}, stepSubagentActivities: {} }),
+
+  appendSubagentToolCall: (step, parentToolUseId, toolCall) => set((state) => {
+    const stepActivities = state.stepSubagentActivities[step] || {}
+    const activity = stepActivities[parentToolUseId] || {
+      parent_tool_use_id: parentToolUseId,
+      events: [],
+      tool_calls: [],
+      status: 'running' as const,
+    }
+    // Add to both events (chronological) and tool_calls (backwards compat)
+    const newEvent: SubagentEvent = {
+      type: 'tool_call',
+      timestamp: toolCall.timestamp,
+      tool_use_id: toolCall.tool_use_id,
+      tool_name: toolCall.tool_name,
+      arguments: toolCall.arguments,
+    }
+    return {
+      stepSubagentActivities: {
+        ...state.stepSubagentActivities,
+        [step]: {
+          ...stepActivities,
+          [parentToolUseId]: {
+            ...activity,
+            events: [...(activity.events || []), newEvent],
+            tool_calls: [...activity.tool_calls, toolCall],
+          },
+        },
+      },
+    }
+  }),
+
+  appendSubagentText: (step, parentToolUseId, text, timestamp) => set((state) => {
+    const stepActivities = state.stepSubagentActivities[step] || {}
+    const activity = stepActivities[parentToolUseId] || {
+      parent_tool_use_id: parentToolUseId,
+      events: [],
+      tool_calls: [],
+      status: 'running' as const,
+    }
+    const events = activity.events || []
+    const lastEvent = events[events.length - 1]
+
+    // Merge consecutive text events
+    if (lastEvent && lastEvent.type === 'text') {
+      const updatedEvents = [...events]
+      updatedEvents[updatedEvents.length - 1] = {
+        ...lastEvent,
+        content: (lastEvent.content || '') + text,
+        timestamp,
+      }
+      return {
+        stepSubagentActivities: {
+          ...state.stepSubagentActivities,
+          [step]: {
+            ...stepActivities,
+            [parentToolUseId]: {
+              ...activity,
+              events: updatedEvents,
+            },
+          },
+        },
+      }
+    }
+
+    // Add new text event
+    const newEvent: SubagentEvent = {
+      type: 'text',
+      timestamp,
+      content: text,
+    }
+    return {
+      stepSubagentActivities: {
+        ...state.stepSubagentActivities,
+        [step]: {
+          ...stepActivities,
+          [parentToolUseId]: {
+            ...activity,
+            events: [...events, newEvent],
+          },
+        },
+      },
+    }
+  }),
+
+  markSubagentCompleted: (step, parentToolUseId) => set((state) => {
+    const stepActivities = state.stepSubagentActivities[step] || {}
+    const activity = stepActivities[parentToolUseId]
+    if (!activity) return state
+    return {
+      stepSubagentActivities: {
+        ...state.stepSubagentActivities,
+        [step]: {
+          ...stepActivities,
+          [parentToolUseId]: {
+            ...activity,
+            status: 'completed' as const,
+          },
+        },
+      },
+    }
+  }),
+
+  clearStepSubagents: (step) => set((state) => {
+    const newActivities = { ...state.stepSubagentActivities }
+    delete newActivities[step]
+    return { stepSubagentActivities: newActivities }
+  }),
+
+  setStepSubagentActivities: (activities) => set({ stepSubagentActivities: activities }),
 
   setLoading: (key, value) => set((state) => ({
     loading: { ...state.loading, [key]: value },
   })),
 
+  // WebSocket actions
+  setWsStatus: (status) => set({ wsStatus: status }),
+
   // Worktree actions
   setUserInputRequest: (request) => set({ userInputRequest: request }),
   setWorktreeStatus: (status) => set({ worktreeStatus: status }),
   clearUserInputRequest: () => set({ userInputRequest: null }),
+
+  // Clarification actions
+  setPendingClarification: (clarification) => set({ pendingClarification: clarification }),
+  clearPendingClarification: () => set({ pendingClarification: null }),
+
+  // Cycle Types actions
+  setCycleTypes: (types) => set({ cycleTypes: types }),
+  setCurrentCycleType: (cycleType) => set({ currentCycleType: cycleType }),
+  setCyclePhases: (phases) => set({ cyclePhases: phases }),
+
+  fetchCycleTypes: async () => {
+    try {
+      const types = await api.getCycleTypes()
+      set({ cycleTypes: types })
+    } catch (error) {
+      console.error('Failed to fetch cycle types:', error)
+    }
+  },
+
+  fetchCyclePhases: async (cycleType: string) => {
+    try {
+      const phases = await api.getCyclePhases(cycleType)
+      set({ cyclePhases: phases, currentCycleType: cycleType })
+    } catch (error) {
+      console.error('Failed to fetch cycle phases:', error)
+    }
+  },
+
+  // Code Review actions
+  setCurrentPR: (pr) => set({ currentPR: pr }),
+  setReviewComments: (comments) => set({ reviewComments: comments }),
+  setReviewIterations: (iterations) => set({ reviewIterations: iterations }),
+
+  fetchPipelineReviews: async (pipelineId: string) => {
+    try {
+      const reviews = await api.getPipelineReviews(pipelineId)
+      set({
+        reviewComments: reviews.comments,
+        reviewIterations: reviews.iterations,
+      })
+      // Also try to get the PR
+      try {
+        const pr = await api.getPipelinePR(pipelineId)
+        set({ currentPR: pr })
+      } catch {
+        // PR may not exist yet
+        set({ currentPR: null })
+      }
+    } catch (error) {
+      console.error('Failed to fetch pipeline reviews:', error)
+    }
+  },
+
+  // Offline Events actions
+  setOfflineEvents: (events) => set({ offlineEvents: events }),
+  addOfflineEvent: (event) => set((state) => ({
+    offlineEvents: [...state.offlineEvents, event],
+    showOfflineBanner: true,
+  })),
+  setShowOfflineBanner: (show) => set({ showOfflineBanner: show }),
+
+  acknowledgeOfflineEvents: async (eventIds: string[]) => {
+    const sessionId = get().sessionId
+    if (!sessionId) return
+
+    try {
+      await api.acknowledgeEvents(sessionId, eventIds)
+      set((state) => ({
+        offlineEvents: state.offlineEvents.filter(e => !eventIds.includes(e.id)),
+        showOfflineBanner: state.offlineEvents.filter(e => !eventIds.includes(e.id)).length > 0,
+      }))
+    } catch (error) {
+      console.error('Failed to acknowledge offline events:', error)
+    }
+  },
 
   // API actions
   fetchAppConfig: async () => {
@@ -318,8 +603,9 @@ export const useStore = create<StoreState>((set, get) => ({
         break
 
       case 'step_started':
-        // Clear events and outputs for this step when it starts (in case of retry)
+        // Clear events, outputs, and subagent activities for this step when it starts (in case of retry)
         state.clearStepEvents(message.step)
+        state.clearStepSubagents(message.step)
         set((s) => {
           const newOutputs = { ...s.stepOutputs }
           delete newOutputs[message.step]
@@ -344,7 +630,28 @@ export const useStore = create<StoreState>((set, get) => ({
         state.appendToolCallEvent(
           message.step,
           message.tool,
-          message.arguments
+          message.arguments,
+          message.tool_use_id
+        )
+        break
+
+      case 'subagent_tool_call':
+        // Append subagent tool call to activity tracker
+        state.appendSubagentToolCall(message.step, message.parent_tool_use_id, {
+          tool_use_id: message.tool_use_id,
+          tool_name: message.tool_name,
+          arguments: message.arguments as Record<string, unknown>,
+          timestamp: message.timestamp,
+        })
+        break
+
+      case 'subagent_text':
+        // Append subagent text to activity tracker
+        state.appendSubagentText(
+          message.step,
+          message.parent_tool_use_id,
+          message.text,
+          message.timestamp
         )
         break
 
@@ -383,11 +690,11 @@ export const useStore = create<StoreState>((set, get) => ({
           ),
           currentPipeline: s.currentPipeline
             ? {
-                ...s.currentPipeline,
-                current_step: message.next_step || message.step,  // Stay on current step if no next (last step)
-                total_tokens: (s.currentPipeline.total_tokens || 0) + (message.tokens_used || 0),
-                total_cost: (s.currentPipeline.total_cost || 0) + (message.cost || 0),
-              }
+              ...s.currentPipeline,
+              current_step: message.next_step || message.step,  // Stay on current step if no next (last step)
+              total_tokens: (s.currentPipeline.total_tokens || 0) + (message.tokens_used || 0),
+              total_cost: (s.currentPipeline.total_cost || 0) + (message.cost || 0),
+            }
             : null,
           stepOutputs: {
             ...s.stepOutputs,
@@ -435,6 +742,25 @@ export const useStore = create<StoreState>((set, get) => ({
         }))
         break
 
+      case 'step_skipped':
+        set((s) => ({
+          currentSteps: s.currentSteps.map((step) => {
+            if (step.step_number === message.step) {
+              // Skipped step
+              return { ...step, status: 'skipped', error_message: `[SKIPPED] ${message.reason}` }
+            }
+            if (step.step_number === message.next_step) {
+              // Next step starts running
+              return { ...step, status: 'running' }
+            }
+            return step
+          }),
+          currentPipeline: s.currentPipeline
+            ? { ...s.currentPipeline, current_step: message.next_step }
+            : null,
+        }))
+        break
+
       case 'sync_complete':
         state.fetchTickets()
         state.fetchTicketStats()
@@ -476,6 +802,98 @@ export const useStore = create<StoreState>((set, get) => ({
 
       case 'worktree_session_cleaned':
         set({ worktreeStatus: 'cleaned' })
+        break
+
+      // Clarification events
+      case 'clarification_requested':
+        set((s) => ({
+          currentPipeline: s.currentPipeline
+            ? { ...s.currentPipeline, status: 'waiting_for_review' }
+            : null,
+          currentSteps: s.currentSteps.map((step) =>
+            step.step_number === message.step
+              ? { ...step, status: 'waiting' }
+              : step
+          ),
+          pendingClarification: {
+            id: message.clarification_id,
+            stepNumber: message.step,
+            question: message.question,
+            options: message.options,
+            context: message.context,
+          },
+        }))
+        break
+
+      case 'clarification_answered':
+        set((s) => ({
+          currentPipeline: s.currentPipeline
+            ? { ...s.currentPipeline, status: 'running' }
+            : null,
+          currentSteps: s.currentSteps.map((step) =>
+            step.step_number === message.step
+              ? { ...step, status: 'running' }
+              : step
+          ),
+          pendingClarification: null,
+        }))
+        break
+
+      // Code Review events
+      case 'waiting_for_review':
+        set((s) => ({
+          currentPipeline: s.currentPipeline
+            ? { ...s.currentPipeline, status: 'waiting_for_review' }
+            : null,
+        }))
+        break
+
+      case 'review_received':
+        // Refresh review comments when new reviews come in
+        if (state.currentPipeline) {
+          state.fetchPipelineReviews(state.currentPipeline.id)
+        }
+        break
+
+      case 'review_responded':
+        // Refresh review comments after agent responds
+        if (state.currentPipeline) {
+          state.fetchPipelineReviews(state.currentPipeline.id)
+        }
+        break
+
+      case 'pr_approved':
+        set((s) => ({
+          currentPipeline: s.currentPipeline
+            ? { ...s.currentPipeline, status: 'completed' }
+            : null,
+          currentPR: s.currentPR
+            ? { ...s.currentPR, status: 'approved' }
+            : null,
+        }))
+        break
+
+      case 'changes_requested':
+        set((s) => ({
+          currentPipeline: s.currentPipeline
+            ? { ...s.currentPipeline, status: 'waiting_for_review' }
+            : null,
+        }))
+        // Refresh review comments
+        if (state.currentPipeline) {
+          state.fetchPipelineReviews(state.currentPipeline.id)
+        }
+        break
+
+      // Offline Events
+      case 'offline_event':
+        state.addOfflineEvent({
+          id: message.event_id,
+          type: message.event_type as OfflineEvent['type'],
+          pipeline_id: message.pipeline_id,
+          data: message.data as Record<string, unknown>,
+          occurred_at: message.occurred_at,
+        })
         break
 
       default:

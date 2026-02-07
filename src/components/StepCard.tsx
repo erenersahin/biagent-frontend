@@ -3,10 +3,10 @@ import ReactMarkdown from 'react-markdown'
 import remarkGfm from 'remark-gfm'
 import { Prism as SyntaxHighlighter } from 'react-syntax-highlighter'
 import { oneLight } from 'react-syntax-highlighter/dist/esm/styles/prism'
-import type { PipelineStep } from '../types'
+import type { PipelineStep, SubagentActivity, SubagentEvent } from '../types'
 import type { StepEvent } from '../lib/store'
 import type { StepEvent as ApiStepEvent } from '../lib/api'
-import * as api from '../lib/api'
+import RecoveryOptions from './RecoveryOptions'
 
 
 // Render arguments as a simple table
@@ -32,11 +32,244 @@ const ArgsTable = ({ args }: { args: object }) => {
   )
 }
 
-// Compact tool call display
-const ToolCallItem = ({ tool, args, isRunning }: { tool: string; args: object; isRunning?: boolean }) => {
+// Subagent conversation panel - shows text + tool calls like a mini StepCard
+const SubagentConversationPanel = ({
+  activity,
+  args,
+}: {
+  activity: SubagentActivity
+  args: object
+}) => {
+  const [expanded, setExpanded] = useState(false)
+  const subagentType = (args as { subagent_type?: string }).subagent_type || 'subagent'
+  const description = (args as { description?: string }).description || ''
+  const events = activity.events || []
+  const isRunning = activity.status === 'running'
+  const toolCount = events.filter(e => e.type === 'tool_call').length
+
+  // Format subagent name for display
+  const formatAgentName = (name: string) => {
+    return name
+      .replace(/_/g, ' ')
+      .replace(/agent$/i, '')
+      .trim()
+      .split(' ')
+      .map(w => w.charAt(0).toUpperCase() + w.slice(1))
+      .join(' ')
+  }
+
+  return (
+    <div className="mb-3 rounded-lg border border-purple-200/50 bg-purple-50/30 overflow-hidden">
+      {/* Header - clickable to expand/collapse */}
+      <button
+        onClick={() => setExpanded(!expanded)}
+        className="w-full flex items-center justify-between px-3 py-2 text-left hover:bg-purple-50/50 transition-colors"
+      >
+        <div className="flex items-center gap-2">
+          {isRunning ? (
+            <div className="w-2 h-2 rounded-full bg-purple-500 animate-pulse" />
+          ) : (
+            <svg className="w-4 h-4 text-purple-500" fill="currentColor" viewBox="0 0 20 20">
+              <path fillRule="evenodd" d="M16.707 5.293a1 1 0 010 1.414l-8 8a1 1 0 01-1.414 0l-4-4a1 1 0 011.414-1.414L8 12.586l7.293-7.293a1 1 0 011.414 0z" clipRule="evenodd" />
+            </svg>
+          )}
+          <span className="text-sm font-medium text-purple-700">
+            {formatAgentName(subagentType)}
+          </span>
+          {description && (
+            <span className="text-xs text-purple-500/70 truncate max-w-[200px]">
+              — {description}
+            </span>
+          )}
+        </div>
+        <div className="flex items-center gap-2">
+          <span className="text-xs text-purple-500/60">
+            {toolCount} tools
+          </span>
+          <svg
+            className={`w-4 h-4 text-purple-400 transition-transform ${expanded ? 'rotate-180' : ''}`}
+            fill="none"
+            stroke="currentColor"
+            viewBox="0 0 24 24"
+          >
+            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 9l-7 7-7-7" />
+          </svg>
+        </div>
+      </button>
+
+      {/* Expanded content - subagent conversation */}
+      {expanded && (
+        <div className="px-3 pb-3 border-t border-purple-200/30 max-h-64 overflow-y-auto">
+          <div className="pt-2 space-y-2">
+            {events.length === 0 && isRunning && (
+              <p className="text-xs text-purple-400 italic">
+                Subagent starting...
+                <span className="streaming-cursor" />
+              </p>
+            )}
+            {events.map((event, idx) => (
+              <SubagentEventItem
+                key={idx}
+                event={event}
+                showCursor={isRunning && idx === events.length - 1 && event.type === 'text'}
+              />
+            ))}
+            {isRunning && events.length > 0 && events[events.length - 1].type !== 'text' && (
+              <p className="text-xs text-purple-400 italic animate-pulse">
+                Working...
+              </p>
+            )}
+          </div>
+        </div>
+      )}
+    </div>
+  )
+}
+
+// Subagent event item (text or tool call)
+const SubagentEventItem = ({
+  event,
+  showCursor,
+}: {
+  event: SubagentEvent
+  showCursor: boolean
+}) => {
+  const [expanded, setExpanded] = useState(false)
+
+  if (event.type === 'text' && event.content) {
+    // Render text with markdown
+    return (
+      <div className="text-xs text-gray-700 leading-relaxed">
+        <ReactMarkdown
+          remarkPlugins={[remarkGfm]}
+          components={{
+            p: ({ children }) => <p className="mb-1">{children}{showCursor && <span className="streaming-cursor" />}</p>,
+            code: ({ children }) => <code className="bg-purple-100 px-1 rounded text-[10px]">{children}</code>,
+            strong: ({ children }) => <strong className="font-medium">{children}</strong>,
+            ul: ({ children }) => <ul className="list-disc ml-3 mb-1">{children}</ul>,
+            ol: ({ children }) => <ol className="list-decimal ml-3 mb-1">{children}</ol>,
+            li: ({ children }) => <li className="mb-0.5">{children}</li>,
+          }}
+        >
+          {event.content}
+        </ReactMarkdown>
+      </div>
+    )
+  }
+
+  if (event.type === 'tool_call' && event.tool_name) {
+    // Get preview from arguments
+    const getArgPreview = () => {
+      const args = event.arguments || {}
+      if (args.pattern) return `"${String(args.pattern).slice(0, 25)}..."`
+      if (args.file_path) {
+        const path = String(args.file_path)
+        return path.split('/').pop() || path.slice(-25)
+      }
+      if (args.query) return `"${String(args.query).slice(0, 20)}..."`
+      if (args.command) return String(args.command).slice(0, 30)
+      return null
+    }
+
+    const preview = getArgPreview()
+
+    return (
+      <div className="py-0.5">
+        <button
+          onClick={() => setExpanded(!expanded)}
+          className="flex items-center gap-1.5 text-xs text-purple-600 hover:text-purple-800 font-mono"
+        >
+          <svg className="w-3 h-3 text-purple-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M10 20l4-16m4 4l4 4-4 4M6 16l-4-4 4-4" />
+          </svg>
+          <span className="font-medium">{event.tool_name}</span>
+          {preview && (
+            <span className="text-purple-400 truncate max-w-[150px]">{preview}</span>
+          )}
+          <svg
+            className={`w-2.5 h-2.5 text-purple-400 transition-transform ${expanded ? 'rotate-180' : ''}`}
+            fill="none"
+            stroke="currentColor"
+            viewBox="0 0 24 24"
+          >
+            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 9l-7 7-7-7" />
+          </svg>
+        </button>
+        {expanded && event.arguments && (
+          <div className="ml-4 mt-1 p-2 bg-purple-50 rounded text-[10px] max-h-20 overflow-auto">
+            <ArgsTable args={event.arguments} />
+          </div>
+        )}
+      </div>
+    )
+  }
+
+  return null
+}
+
+// Regular tool call display (non-Task tools)
+const ToolCallItem = ({
+  tool,
+  args,
+  isRunning,
+  subagentActivity,
+  isCompleted,
+}: {
+  tool: string
+  args: object
+  isRunning?: boolean
+  subagentActivity?: SubagentActivity
+  isCompleted?: boolean  // True when viewing completed step events
+}) => {
   const [expanded, setExpanded] = useState(false)
   const argCount = Object.keys(args).length
+  const isTask = tool === 'Task'
 
+  // For Task tools with subagent activity, render as conversation panel
+  if (isTask && subagentActivity) {
+    return <SubagentConversationPanel activity={subagentActivity} args={args} />
+  }
+
+  // For Task tools without activity yet (or completed without data), show appropriate state
+  if (isTask) {
+    const subagentType = (args as { subagent_type?: string }).subagent_type || 'subagent'
+    const formatAgentName = (name: string) => {
+      return name.replace(/_/g, ' ').replace(/agent$/i, '').trim()
+        .split(' ').map(w => w.charAt(0).toUpperCase() + w.slice(1)).join(' ')
+    }
+
+    // If step is completed but no subagent activity data, show as completed
+    if (isCompleted) {
+      return (
+        <div className="mb-3 rounded-lg border border-purple-200/50 bg-purple-50/30 px-3 py-2">
+          <div className="flex items-center gap-2">
+            <svg className="w-4 h-4 text-purple-500" fill="currentColor" viewBox="0 0 20 20">
+              <path fillRule="evenodd" d="M16.707 5.293a1 1 0 010 1.414l-8 8a1 1 0 01-1.414 0l-4-4a1 1 0 011.414-1.414L8 12.586l7.293-7.293a1 1 0 011.414 0z" clipRule="evenodd" />
+            </svg>
+            <span className="text-sm font-medium text-purple-700">
+              {formatAgentName(subagentType)}
+            </span>
+            <span className="text-xs text-purple-500/60">completed</span>
+          </div>
+        </div>
+      )
+    }
+
+    // Still running/pending - show starting state
+    return (
+      <div className="mb-3 rounded-lg border border-purple-200/50 bg-purple-50/30 px-3 py-2">
+        <div className="flex items-center gap-2">
+          <div className="w-2 h-2 rounded-full bg-purple-500 animate-pulse" />
+          <span className="text-sm font-medium text-purple-700">
+            {formatAgentName(subagentType)}
+          </span>
+          <span className="text-xs text-purple-400 italic">starting...</span>
+        </div>
+      </div>
+    )
+  }
+
+  // Regular tool call display
   return (
     <div className="mb-2">
       <button
@@ -57,6 +290,7 @@ const ToolCallItem = ({ tool, args, isRunning }: { tool: string; args: object; i
           <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 9l-7 7-7-7" />
         </svg>
       </button>
+
       {expanded && (
         <div className="mt-1 ml-2 p-2 bg-bg-page rounded max-h-32 overflow-auto">
           <ArgsTable args={args} />
@@ -139,15 +373,38 @@ const TextBlock = ({ content }: { content: string }) => {
 }
 
 // Render a single event
-const EventItem = ({ event }: { event: ApiStepEvent }) => {
+const EventItem = ({
+  event,
+  subagentActivities,
+}: {
+  event: ApiStepEvent
+  subagentActivities?: Record<string, SubagentActivity>
+}) => {
   if (event.type === 'tool_call') {
-    return <ToolCallItem tool={event.tool || ''} args={event.arguments || {}} />
+    // Look up subagent activity by tool_use_id
+    const subagentActivity = event.tool_use_id && subagentActivities
+      ? subagentActivities[event.tool_use_id]
+      : undefined
+    return (
+      <ToolCallItem
+        tool={event.tool || ''}
+        args={event.arguments || {}}
+        subagentActivity={subagentActivity}
+        isCompleted={true}
+      />
+    )
   }
   return <TextBlock content={event.content || ''} />
 }
 
 // Completed events view - shows last text as output, with "show all" for history
-const CompletedEventsView = ({ events }: { events: ApiStepEvent[] }) => {
+const CompletedEventsView = ({
+  events,
+  subagentActivities,
+}: {
+  events: ApiStepEvent[]
+  subagentActivities?: Record<string, SubagentActivity>
+}) => {
   const [showAll, setShowAll] = useState(false)
 
   // Find the last text event (the output)
@@ -168,7 +425,7 @@ const CompletedEventsView = ({ events }: { events: ApiStepEvent[] }) => {
           </button>
         )}
         {events.map((event, idx) => (
-          <EventItem key={idx} event={event} />
+          <EventItem key={idx} event={event} subagentActivities={subagentActivities} />
         ))}
       </>
     )
@@ -187,10 +444,10 @@ const CompletedEventsView = ({ events }: { events: ApiStepEvent[] }) => {
           </svg>
         </button>
       )}
-      {lastTextEvent && <EventItem event={lastTextEvent} />}
+      {lastTextEvent && <EventItem event={lastTextEvent} subagentActivities={subagentActivities} />}
       {!lastTextEvent && events.length > 0 && (
         // If no text event, show the last event whatever it is
-        <EventItem event={events[events.length - 1]} />
+        <EventItem event={events[events.length - 1]} subagentActivities={subagentActivities} />
       )}
     </>
   )
@@ -251,9 +508,28 @@ const StreamingTextBlock = ({ content, showCursor }: { content: string; showCurs
 }
 
 // Running event component
-const RunningEvent = ({ event, showCursor }: { event: StepEvent; showCursor: boolean }) => {
+const RunningEvent = ({
+  event,
+  showCursor,
+  subagentActivities,
+}: {
+  event: StepEvent
+  showCursor: boolean
+  subagentActivities?: Record<string, SubagentActivity>
+}) => {
   if (event.type === 'tool_call') {
-    return <ToolCallItem tool={event.tool} args={event.arguments} isRunning />
+    // Look up subagent activity by tool_use_id
+    const subagentActivity = event.tool_use_id && subagentActivities
+      ? subagentActivities[event.tool_use_id]
+      : undefined
+    return (
+      <ToolCallItem
+        tool={event.tool}
+        args={event.arguments}
+        isRunning
+        subagentActivity={subagentActivity}
+      />
+    )
   }
 
   return <StreamingTextBlock content={event.content} showCursor={showCursor} />
@@ -267,6 +543,8 @@ interface StepCardProps {
   completedEvents?: ApiStepEvent[]  // Chronological events loaded from DB for completed steps
   completedOutput?: string  // Fallback: text content for old data without events
   completedToolCalls?: { tool: string; arguments: string }[]  // Fallback: tool calls for old data
+  totalSteps?: number  // Total steps in pipeline (for restart dropdown)
+  subagentActivities?: Record<string, SubagentActivity>  // parent_tool_use_id -> SubagentActivity (for this step)
 }
 
 export default function StepCard({
@@ -277,11 +555,11 @@ export default function StepCard({
   completedEvents = [],
   completedOutput = '',
   completedToolCalls = [],
+  totalSteps = 8,
+  subagentActivities = {},
 }: StepCardProps) {
   const [expanded, setExpanded] = useState(isActive)
-  const [feedbackOpen, setFeedbackOpen] = useState(false)
-  const [feedback, setFeedback] = useState('')
-  const [submitting, setSubmitting] = useState(false)
+  const [showRecovery, setShowRecovery] = useState(false)
   const scrollContainerRef = useRef<HTMLDivElement>(null)
 
   // Auto-scroll to bottom when new events arrive during running state
@@ -290,6 +568,13 @@ export default function StepCard({
       scrollContainerRef.current.scrollTop = scrollContainerRef.current.scrollHeight
     }
   }, [stepEvents, step.status, expanded])
+
+  // Auto-close recovery options when step is no longer failed/paused (e.g., pipeline retried)
+  useEffect(() => {
+    if (showRecovery && step.status !== 'failed' && step.status !== 'paused') {
+      setShowRecovery(false)
+    }
+  }, [step.status, showRecovery])
 
   const getStatusClass = () => {
     switch (step.status) {
@@ -301,6 +586,10 @@ export default function StepCard({
         return 'step-card--failed'
       case 'paused':
         return 'step-card--paused'
+      case 'skipped':
+        return 'step-card--skipped'
+      case 'waiting':
+        return 'step-card--waiting'
       default:
         return 'step-card--pending'
     }
@@ -332,23 +621,20 @@ export default function StepCard({
         )
       case 'paused':
         return <div className="status-dot status-dot--paused" />
+      case 'skipped':
+        return (
+          <svg className="w-5 h-5 text-text-muted" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M13 5l7 7-7 7M5 5l7 7-7 7" />
+          </svg>
+        )
+      case 'waiting':
+        return (
+          <svg className="w-5 h-5 text-info animate-pulse" fill="currentColor" viewBox="0 0 20 20">
+            <path fillRule="evenodd" d="M10 18a8 8 0 100-16 8 8 0 000 16zm1-12a1 1 0 10-2 0v4a1 1 0 00.293.707l2.828 2.829a1 1 0 101.415-1.415L11 9.586V6z" clipRule="evenodd" />
+          </svg>
+        )
       default:
         return <div className="status-dot status-dot--pending" />
-    }
-  }
-
-  const handleSubmitFeedback = async () => {
-    if (!feedback.trim()) return
-
-    setSubmitting(true)
-    try {
-      await api.provideFeedback(pipelineId, step.step_number, feedback)
-      setFeedbackOpen(false)
-      setFeedback('')
-    } catch (err) {
-      console.error('Failed to submit feedback:', err)
-    } finally {
-      setSubmitting(false)
     }
   }
 
@@ -370,10 +656,26 @@ export default function StepCard({
         </div>
 
         <div className="flex items-center gap-4">
+          {/* Cost info */}
           {step.tokens_used > 0 && (
-            <span className="text-sm text-text-muted">
-              {step.tokens_used.toLocaleString()} tokens &bull; $
-              {step.cost.toFixed(4)}
+            <div className="flex items-center gap-3 text-sm">
+              <span className="flex items-center gap-1 text-text-muted">
+                <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M7 7h.01M7 3h5c.512 0 1.024.195 1.414.586l7 7a2 2 0 010 2.828l-7 7a2 2 0 01-2.828 0l-7-7A1.994 1.994 0 013 12V7a4 4 0 014-4z" />
+                </svg>
+                {step.tokens_used.toLocaleString()}
+              </span>
+              <span className="flex items-center gap-1 font-mono text-text-muted">
+                <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 8c-1.657 0-3 .895-3 2s1.343 2 3 2 3 .895 3 2-1.343 2-3 2m0-8c1.11 0 2.08.402 2.599 1M12 8V7m0 1v8m0 0v1m0-1c-1.11 0-2.08-.402-2.599-1M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
+                </svg>
+                ${step.cost.toFixed(4)}
+              </span>
+            </div>
+          )}
+          {step.status === 'running' && (
+            <span className="text-xs px-2 py-0.5 bg-info/20 text-primary-dark rounded-full animate-pulse">
+              Running
             </span>
           )}
           <svg
@@ -405,6 +707,7 @@ export default function StepCard({
                     key={idx}
                     event={event}
                     showCursor={idx === stepEvents.length - 1 && event.type === 'text'}
+                    subagentActivities={subagentActivities}
                   />
                 ))}
               </>
@@ -432,12 +735,26 @@ export default function StepCard({
               </p>
             )}
 
+            {/* Show message for skipped steps */}
+            {step.status === 'skipped' && (
+              <p className="text-text-muted text-sm italic text-center py-4">
+                Step was skipped
+              </p>
+            )}
+
+            {/* Show message for waiting steps */}
+            {step.status === 'waiting' && (
+              <p className="text-info text-sm italic text-center py-4">
+                Waiting for clarification...
+              </p>
+            )}
+
             {/* Completed Output (after completion) */}
             {step.status === 'completed' && (completedEvents.length > 0 || completedOutput || completedToolCalls.length > 0) && (
               <>
                 {completedEvents.length > 0 ? (
                   // New format: show last output with "show all" for history
-                  <CompletedEventsView events={completedEvents} />
+                  <CompletedEventsView events={completedEvents} subagentActivities={subagentActivities} />
                 ) : (
                   // Fallback: old format - just show text output
                   completedOutput && <TextBlock content={completedOutput} />
@@ -462,50 +779,30 @@ export default function StepCard({
             </div>
           )}
 
-          {/* Actions - outside scrollable area */}
-          {(step.status === 'completed' || step.status === 'failed') && (
-            <div className="mt-3 flex items-center gap-3">
+          {/* Recovery Options for failed/paused steps */}
+          {(step.status === 'failed' || step.status === 'paused') && !showRecovery && (
+            <div className="mt-3">
               <button
                 onClick={(e) => {
                   e.stopPropagation()
-                  setFeedbackOpen(!feedbackOpen)
+                  setShowRecovery(true)
                 }}
-                className="btn btn-secondary text-xs py-1.5 px-3"
+                className="btn btn-primary text-xs py-1.5 px-3"
               >
-                Provide Feedback
+                Recovery Options
               </button>
             </div>
           )}
 
-          {/* Feedback Form */}
-          {feedbackOpen && (
-            <div className="border-t border-border-light pt-3 mt-3">
-              <label className="block text-xs font-medium text-text-heading mb-2">
-                What should the agent do differently?
-              </label>
-              <textarea
-                value={feedback}
-                onChange={(e) => setFeedback(e.target.value)}
-                placeholder="Describe the changes you want..."
-                className="w-full p-2 border border-border-primary rounded text-xs resize-none"
-                rows={2}
-              />
-              <div className="flex justify-end gap-2 mt-2">
-                <button
-                  onClick={() => setFeedbackOpen(false)}
-                  className="text-xs text-text-muted hover:text-text-body"
-                >
-                  Cancel
-                </button>
-                <button
-                  onClick={handleSubmitFeedback}
-                  disabled={!feedback.trim() || submitting}
-                  className="btn btn-primary text-xs py-1.5 px-3 disabled:opacity-50"
-                >
-                  {submitting ? 'Submitting...' : 'Submit'}
-                </button>
-              </div>
-            </div>
+          {/* Recovery Options Panel */}
+          {showRecovery && (
+            <RecoveryOptions
+              pipelineId={pipelineId}
+              stepNumber={step.step_number}
+              stepName={step.step_name}
+              totalSteps={totalSteps}
+              onClose={() => setShowRecovery(false)}
+            />
           )}
         </div>
       )}
